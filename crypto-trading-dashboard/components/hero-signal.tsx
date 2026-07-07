@@ -72,7 +72,7 @@ export function HeroSignal({ signal }: { signal: Signal }) {
             </p>
           </div>
 
-          <p className="text-xs text-muted-foreground">Issued {formatTime(signal.timestamp)} · Cipher AI Engine</p>
+          <p className="text-xs text-muted-foreground">Issued {formatTime(signal.timestamp)} · Weng Crypto AI Engine</p>
         </div>
 
         <div className="flex flex-col gap-1 rounded-xl border border-border/60 bg-card/60 p-5 md:min-w-[220px] md:text-right">

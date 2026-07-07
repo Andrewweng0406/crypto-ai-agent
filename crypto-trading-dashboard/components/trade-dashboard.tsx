@@ -104,7 +104,7 @@ export function TradeDashboard() {
             <Zap className="size-5" aria-hidden="true" />
           </span>
           <div className="flex flex-col leading-none">
-            <span className="font-mono text-lg font-bold tracking-tight">Cipher</span>
+            <span className="font-mono text-lg font-bold tracking-tight">Weng Crypto</span>
             <span className="text-xs text-muted-foreground">AI Signal Terminal</span>
           </div>
         </div>
@@ -234,7 +234,7 @@ function NoActiveSignal({
             No Active Signal
           </span>
           <h1 className="font-mono text-3xl font-bold tracking-tight text-balance md:text-4xl">{symbol}</h1>
-          <p className="text-xs text-muted-foreground">Last checked {formatTime(updatedAt)} · Cipher AI Engine</p>
+          <p className="text-xs text-muted-foreground">Last checked {formatTime(updatedAt)} · Weng Crypto AI Engine</p>
         </div>
         {currentPrice !== null && (
           <div className="flex flex-col gap-1 rounded-xl border border-border/60 bg-card/60 p-5 md:min-w-[220px] md:text-right">

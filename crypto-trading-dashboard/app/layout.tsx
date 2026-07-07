@@ -13,7 +13,7 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Cipher — AI Trading Signals',
+  title: 'Weng Crypto — AI Trading Signals',
   description:
     'A premium AI-powered crypto trading signal terminal. Real-time entries, take-profit and stop-loss levels built for active traders.',
   generator: 'v0.app',
