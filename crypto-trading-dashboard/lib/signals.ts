@@ -308,10 +308,15 @@ export function formatPrice(value: number): string {
 }
 
 export function formatTime(iso: string): string {
+  // Pinning an explicit timeZone is required for SSR correctness: without it,
+  // this resolves to the runtime's local zone, which is UTC on Vercel's
+  // server-rendered/prerendered HTML but the visitor's own zone on the
+  // client — the mismatched strings trigger a React hydration error.
   return new Date(iso).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: "Asia/Taipei",
   })
 }
