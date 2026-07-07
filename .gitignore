@@ -1,0 +1,16 @@
+# --- Python backend ---
+venv/
+__pycache__/
+*.pyc
+logs/
+data_cache/
+backend.log
+*.log
+
+# --- Next.js frontend ---
+crypto-trading-dashboard/node_modules/
+crypto-trading-dashboard/.next/
+crypto-trading-dashboard/.env.local
+
+# --- OS ---
+.DS_Store
