@@ -479,6 +479,49 @@ export function adaptUSStockHistory(raw: BackendUSStockHistoryResponse): {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AI 智能投研 Agent（獨立模塊，實驗性）：RSS新聞經LLM結構化出標的/摘要/情緒分數，
+// 純資訊面板，沒有方向/TP/SL/槓桿，跟迷因雷達同樣是「監控」而不是交易訊號。
+// ---------------------------------------------------------------------------
+
+export interface BackendNewsItem {
+  title: string
+  url: string
+  source: string
+  published_at: string
+  symbols: string[]
+  summary: string
+  sentiment_score: number  // -10（極度利空）~ +10（極度利多）
+  processed_at: string
+}
+
+export interface BackendNewsAgentResponse {
+  items: BackendNewsItem[]
+  updated_at: string | null
+}
+
+export interface NewsItem {
+  title: string
+  url: string
+  source: string
+  symbols: string[]
+  summary: string
+  sentimentScore: number
+  processedAt: string
+}
+
+export function adaptNewsAgent(raw: BackendNewsAgentResponse): NewsItem[] {
+  return raw.items.map((item) => ({
+    title: item.title,
+    url: item.url,
+    source: item.source,
+    symbols: item.symbols,
+    summary: item.summary,
+    sentimentScore: item.sentiment_score,
+    processedAt: item.processed_at,
+  }))
+}
+
 export function formatPrice(value: number): string {
   // Market-scan and meme-radar symbols can be sub-$1 (DOGE ~$0.075) or
   // sub-cent (PEPE ~$0.0000027) — a fixed 2-decimal format would round

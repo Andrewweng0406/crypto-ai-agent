@@ -7,6 +7,7 @@ import {
   adaptHistory,
   adaptMemeAlerts,
   adaptMemeWatchlist,
+  adaptNewsAgent,
   adaptSignalList,
   adaptUSStockHistory,
   adaptUSStockList,
@@ -15,6 +16,7 @@ import {
   formatTime,
   type BackendHistoryResponse,
   type BackendMemeRadarResponse,
+  type BackendNewsAgentResponse,
   type BackendSignalListResponse,
   type BackendUSStockHistoryResponse,
   type BackendUSStockListResponse,
@@ -32,6 +34,7 @@ import { MonitoringPanel } from "@/components/monitoring-panel"
 import { USStockWatchlist } from "@/components/us-stock-watchlist"
 import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
 import { USStockHistory } from "@/components/us-stock-history"
+import { NewsRadar } from "@/components/news-radar"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -40,15 +43,16 @@ const fetcher = (url: string) =>
     return body
   })
 
-// 迷因雷達、美股ORB都是獨立模塊（跟主流幣不同的資料形狀），tab key 因此延伸出
-// /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "usStock"
+// 迷因雷達、美股ORB、AI輿情雷達都是獨立模塊（跟主流幣不同的資料形狀），
+// tab key 因此延伸出 /api/signals 的 Universe 之外。
+type TabKey = Universe | "meme" | "usStock" | "newsAgent"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "major", label: "主流幣" },
   { key: "scan", label: "市場掃描" },
   { key: "meme", label: "迷因雷達" },
   { key: "usStock", label: "美股 ORB" },
+  { key: "newsAgent", label: "AI 智能輿情雷達" },
 ]
 
 export function TradeDashboard() {
@@ -57,13 +61,14 @@ export function TradeDashboard() {
 
   const isMemeMode = mode === "meme"
   const isUSStockMode = mode === "usStock"
+  const isNewsAgentMode = mode === "newsAgent"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isUSStockMode ? null : `/api/signals?universe=${mode}`,
+    isMemeMode || isUSStockMode || isNewsAgentMode ? null : `/api/signals?universe=${mode}`,
     fetcher,
     { refreshInterval: mode === "major" ? 5000 : 12000 },
   )
@@ -91,6 +96,14 @@ export function TradeDashboard() {
     refreshInterval: 15000,
   })
 
+  const {
+    data: rawNews,
+    error: newsError,
+    isLoading: newsLoading,
+  } = useSWR<BackendNewsAgentResponse>(isNewsAgentMode ? "/api/ai-agent/news" : null, fetcher, {
+    refreshInterval: 30000,
+  })
+
   const { data: rawHistory, error: historyError } = useSWR<BackendHistoryResponse>("/api/history", fetcher, {
     refreshInterval: 15000,
   })
@@ -109,6 +122,7 @@ export function TradeDashboard() {
         : { trades: [], stats: { totalTrades: 0, wins: 0, losses: 0, winRatePct: 0 } },
     [rawUSStockHistory],
   )
+  const newsItems = useMemo(() => (rawNews ? adaptNewsAgent(rawNews) : []), [rawNews])
   const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
 
   // Keep the selection sane across tab switches and data refreshes: default
@@ -142,13 +156,27 @@ export function TradeDashboard() {
   const selected = signals.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
 
-  const activeError = isMemeMode ? memesError : isUSStockMode ? usStocksError : signalsError
-  const activeLoading = isMemeMode ? memesLoading : isUSStockMode ? usStocksLoading : signalsLoading
+  const activeError = isMemeMode
+    ? memesError
+    : isUSStockMode
+      ? usStocksError
+      : isNewsAgentMode
+        ? newsError
+        : signalsError
+  const activeLoading = isMemeMode
+    ? memesLoading
+    : isUSStockMode
+      ? usStocksLoading
+      : isNewsAgentMode
+        ? newsLoading
+        : signalsLoading
   const isConnected = isMemeMode
     ? !memesError && !!rawMemes
     : isUSStockMode
       ? !usStocksError && !!rawUSStocks
-      : !signalsError && !!rawSignals
+      : isNewsAgentMode
+        ? !newsError && !!rawNews
+        : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -284,6 +312,15 @@ export function TradeDashboard() {
             美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，
             <strong className="text-foreground">尚未經過回測驗證，勝率未知</strong>
             ，標的為 BingX 代幣化美股商品（TSLA/NVDA/MSTR/SOXL/TQQQ），僅在美東交易時段運作。
+          </p>
+        </>
+      ) : isNewsAgentMode ? (
+        <>
+          <NewsRadar items={newsItems} isLoading={newsLoading} error={undefined} />
+          <p className="text-center text-xs text-muted-foreground">
+            AI 智能輿情雷達為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
+            等公開新聞來源，交給 AI 判斷相關標的與情緒分數（-10~+10），純粹是資訊監控，
+            <strong className="text-foreground">不是交易訊號</strong>，沒有方向、槓桿或 TP/SL。
           </p>
         </>
       ) : (
