@@ -287,6 +287,37 @@ async def send_telegram_message(text: str) -> None:
         logger.warning("Telegram 推播失敗：%s", exc)
 
 
+# --- 背景迴圈連續失敗告警 ---
+# 三支背景迴圈（主流幣/美股ORB/AI新聞）各自的例外處理都只會寫進 log，log 沒人在
+# 半夜盯著看。這裡加一層「連續失敗達到門檻才推播一次告警」，而不是每次失敗都推播
+# （偶發性的單次網路錯誤很常見，會洗版沒有意義）；失敗後只要成功一次就重置計數，
+# 如果先前告警過，也會補推一則「已恢復」，這樣使用者才知道問題有沒有解決。
+# 純粹是進程內的計數器，不碰 state.lock，也不需要跨重啟保留。
+LOOP_FAILURE_ALERT_THRESHOLD = 3
+_loop_failure_counts: Dict[str, int] = {}
+_loop_alerted: Dict[str, bool] = {}
+
+
+def _record_loop_outcome(loop_name: str, success: bool) -> Optional[str]:
+    if success:
+        was_alerted = _loop_alerted.get(loop_name, False)
+        _loop_failure_counts[loop_name] = 0
+        if was_alerted:
+            _loop_alerted[loop_name] = False
+            return f"✅ <b>背景迴圈已恢復</b>\n{loop_name} 重新開始正常運作"
+        return None
+
+    count = _loop_failure_counts.get(loop_name, 0) + 1
+    _loop_failure_counts[loop_name] = count
+    if count == LOOP_FAILURE_ALERT_THRESHOLD and not _loop_alerted.get(loop_name, False):
+        _loop_alerted[loop_name] = True
+        return (
+            f"🚨 <b>背景迴圈連續失敗</b>\n{loop_name} 已連續失敗 {count} 次，"
+            f"請檢查 Railway log 確認問題"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 2. Pydantic 回應模型
 # ---------------------------------------------------------------------------
@@ -1348,6 +1379,7 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
     was_active = True
 
     while True:
+        failure_notification: Optional[str] = None
         try:
             now_et = datetime.now(tz)
             is_active = _is_us_market_active(now_et)
@@ -1387,8 +1419,14 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
                 for display_name, ticker_symbol in US_STOCK_SYMBOLS.items():
                     await scan_us_stock_orb(exchange_pool, display_name, ticker_symbol)
                 last_scan_at = now_monotonic
+
+            failure_notification = _record_loop_outcome("美股 ORB 迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("美股 ORB 背景迴圈發生錯誤：%s", exc)
+            failure_notification = _record_loop_outcome("美股 ORB 迴圈", success=False)
+
+        if failure_notification:
+            await send_telegram_message(failure_notification)
 
         await asyncio.sleep(US_STOCK_TICKER_INTERVAL_SECONDS)
 
@@ -1632,10 +1670,16 @@ async def news_agent_loop() -> None:
         logger.warning("未設定 OPENAI_API_KEY，AI 新聞情緒分析模塊將只抓新聞、不做情緒分析")
 
     while True:
+        failure_notification: Optional[str] = None
         try:
             await scan_news_agent(openai_client)
+            failure_notification = _record_loop_outcome("AI新聞Agent迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("AI新聞Agent背景迴圈發生錯誤：%s", exc)
+            failure_notification = _record_loop_outcome("AI新聞Agent迴圈", success=False)
+
+        if failure_notification:
+            await send_telegram_message(failure_notification)
 
         await asyncio.sleep(NEWS_SCAN_INTERVAL_SECONDS)
 
@@ -1966,10 +2010,16 @@ async def run_tick(exchange_pool: dict) -> None:
 async def price_monitor_loop(exchange_pool: dict) -> None:
     """背景永久迴圈：每 TICK_INTERVAL_SECONDS 秒跑一次 run_tick，任何例外都會被記錄下來但不中斷服務。"""
     while True:
+        failure_notification: Optional[str] = None
         try:
             await run_tick(exchange_pool)
+            failure_notification = _record_loop_outcome("主流幣監控迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("背景監控迴圈發生錯誤：%s", exc)
+            failure_notification = _record_loop_outcome("主流幣監控迴圈", success=False)
+
+        if failure_notification:
+            await send_telegram_message(failure_notification)
 
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
 
