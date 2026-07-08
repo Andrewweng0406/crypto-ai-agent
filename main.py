@@ -2541,47 +2541,6 @@ async def get_ai_agent_news() -> NewsAgentResponse:
     return NewsAgentResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
-# --- 【一次性維運用途，用完即刪】強制平倉一筆卡住的舊部位 ---
-# LAB/USDT:USDT 因為 MAX_SANE_STOP_LOSS_PCT 防呆修復前產生了一筆止盈價格為負數
-# （永遠不可能觸及）的假訊號，需要手動用當下市價結算掉。用 ADMIN_TOKEN 環境變數
-# 比對，避免公開網站被任意呼叫操作；用完這次就會在下一個 commit 整段移除。
-@app.post("/api/admin/force-close-signal")
-async def admin_force_close_signal(symbol: str, token: str) -> dict:
-    admin_token = os.environ.get("ADMIN_TOKEN", "").strip()
-    if not admin_token or token != admin_token:
-        raise HTTPException(status_code=403, detail="unauthorized")
-
-    async with state.lock:
-        sym_state = state.symbols.get(symbol)
-        if sym_state is None or sym_state.open_signal is None:
-            raise HTTPException(status_code=404, detail="no open signal for this symbol")
-        current_price = sym_state.current_price
-        if current_price is None:
-            raise HTTPException(status_code=400, detail="no current price available")
-
-        signal = sym_state.open_signal
-        side = signal["side"]
-        raw_pnl_pct = (current_price - signal["entry_price"]) / signal["entry_price"] * 100
-        if side == "Short":
-            raw_pnl_pct = -raw_pnl_pct
-        pnl_pct = raw_pnl_pct * signal["leverage"]
-        result = "WIN" if pnl_pct >= 0 else "LOSS"
-
-        closed_record = {
-            **signal,
-            "exit_price": current_price,
-            "result": result,
-            "pnl_pct": pnl_pct,
-            "closed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        state.history.appendleft(closed_record)
-        sym_state.open_signal = None
-        append_jsonl(TRADE_LOG_PATH, closed_record)
-        save_state_snapshot()
-
-    return {"closed": closed_record}
-
-
 @app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health_check() -> dict:
     """
