@@ -74,9 +74,11 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import ccxt.async_support as ccxt
+import feedparser
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -181,6 +183,32 @@ ORB_RISK_REWARD_RATIO = 2.0  # 止盈距離 = 止損距離（開盤區間寬度�
 
 US_STOCK_HISTORY_MAX_LEN = 30
 
+# --- AI 智能投研 Agent（獨立模塊：RSS新聞 -> LLM結構化情緒分析 -> 跟現有部位比對
+# 是否「技術面+情緒面共振」-> Telegram通知）---
+# 資料來源用免費公開 RSS（不需註冊、不需API Key），涵蓋加密貨幣與美股新聞。
+NEWS_RSS_FEEDS: Dict[str, str] = {
+    "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "CoinTelegraph": "https://cointelegraph.com/rss",
+    "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
+    "CNBC Markets": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+}
+NEWS_SCAN_INTERVAL_SECONDS = 600   # 10分鐘一次；LLM呼叫有實際費用，不需要抓太頻繁
+NEWS_MAX_ITEMS_PER_CYCLE = 8       # 每輪最多送幾則新標題給LLM分析，控制成本上限
+NEWS_SEEN_URL_MAX_LEN = 500        # 記住最近幾則新聞網址，避免重複分析、重複通知
+NEWS_HISTORY_MAX_LEN = 60          # /api/ai-agent/news 保留的筆數
+NEWS_RESONANCE_SCORE_THRESHOLD = 7 # 情緒分數 |score| >= 這個值，才算「強烈共振」
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip() or None
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+
+# --- X（Twitter）自動發文：預留接口，目前未啟用 ---
+# 之後申請到 X Developer 帳號、把這四個環境變數設好，post_to_x() 才會真的動作；
+# 現在沒設定的話直接跳過，不影響任何其他功能。目前沒有任何呼叫端在用它。
+X_API_KEY = os.environ.get("X_API_KEY", "").strip() or None
+X_API_SECRET = os.environ.get("X_API_SECRET", "").strip() or None
+X_ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN", "").strip() or None
+X_ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET", "").strip() or None
+
 # --- 落地紀錄（供之後統計用，跟 state.history / state.meme_alerts 這種
 # 「只留最近N筆」的記憶體佇列不同，這裡是永久追加、不會被覆蓋掉的紀錄檔） ---
 # 部署到雲端平台時，容器本身的檔案系統通常是「暫時性」的——重新部署、重啟
@@ -191,6 +219,7 @@ LOG_DIR = os.environ.get("DATA_DIR") or os.path.join(os.path.dirname(os.path.abs
 TRADE_LOG_PATH = os.path.join(LOG_DIR, "trade_log.jsonl")
 MEME_ALERT_LOG_PATH = os.path.join(LOG_DIR, "meme_alert_log.jsonl")
 US_STOCK_TRADE_LOG_PATH = os.path.join(LOG_DIR, "us_stock_trade_log.jsonl")
+NEWS_LOG_PATH = os.path.join(LOG_DIR, "news_agent_log.jsonl")
 
 # --- 狀態快照（讓伺服器重啟不會弄丟正在追蹤中的部位/歷史紀錄） ---
 # 這是「快照」不是逐筆交易資料庫：定期把整個記憶體狀態的重點欄位存成一份
@@ -431,6 +460,22 @@ class USStockHistoryResponse(BaseModel):
     stats: USStockHistoryStats
 
 
+class NewsItemResponse(BaseModel):
+    title: str
+    url: str
+    source: str
+    published_at: str
+    symbols: List[str]       # LLM 從新聞內容判斷出的可交易標的代號，如 ["TSLA","BTC"]
+    summary: str              # LLM 產生的一句話摘要
+    sentiment_score: int      # -10（極度利空）~ +10（極度利多）
+    processed_at: str
+
+
+class NewsAgentResponse(BaseModel):
+    items: List[NewsItemResponse]  # 依處理時間新到舊排序
+    updated_at: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # 3. 全域狀態（背景任務寫入，API 讀取）
 # ---------------------------------------------------------------------------
@@ -502,6 +547,12 @@ class AppState:
         self.us_stock_states: Dict[str, USStockState] = {}
         self.us_stock_history: Deque[dict] = deque(maxlen=US_STOCK_HISTORY_MAX_LEN)
         self.us_market_regime: Literal["Bullish", "Bearish", "Neutral"] = "Neutral"
+
+        # AI 智能投研 Agent（獨立狀態，跟上面所有模塊完全分開，只在偵測到共振時
+        # 才會去「讀」其他模塊的 open_signal，不會反過來被其他模塊碰）
+        self.news_items: Deque[dict] = deque(maxlen=NEWS_HISTORY_MAX_LEN)
+        self.seen_news_urls: Deque[str] = deque(maxlen=NEWS_SEEN_URL_MAX_LEN)
+        self.last_news_scan_at: float = 0.0  # time.monotonic() 時間戳
 
     def get_meme_state(self, symbol: str) -> MemeAlertState:
         if symbol not in self.meme_states:
@@ -1342,6 +1393,235 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6.7 AI 智能投研 Agent（獨立模塊：RSS新聞 -> LLM情緒分析 -> 技術面共振通知）
+# ---------------------------------------------------------------------------
+
+SENTIMENT_PROMPT_TEMPLATE = """你是專業的美股與加密貨幣市場新聞分析師。請閱讀以下這則新聞的標題與摘要，判斷：
+1. 這則新聞明確提到哪些「可交易標的」的代號（美股代號如 TSLA、NVDA，或加密貨幣代號如 BTC、ETH）。
+   只列出新聞內容有明確指名道姓的標的，不要自己聯想擴充；如果沒有明確提到任何可交易標的，回傳空陣列。
+2. 用一句話（繁體中文，30字以內）摘要這則新聞的核心重點。
+3. 給這則新聞對這些標的的市場情緒評分，範圍是 -10（極度利空）到 +10（極度利多），0 代表中性無明顯方向。
+
+新聞標題：{title}
+新聞摘要：{summary}
+
+請「只」回傳一個 JSON 物件，不要加任何其他文字、不要用 markdown 標記包起來，格式如下：
+{{"symbols": ["TSLA", "BTC"], "summary": "一句話摘要", "sentiment_score": 5}}
+
+如果這則新聞跟金融市場無關、或沒有提到任何明確標的，回傳：
+{{"symbols": [], "summary": "一句話摘要", "sentiment_score": 0}}
+"""
+
+
+def build_sentiment_prompt(title: str, summary: str) -> str:
+    return SENTIMENT_PROMPT_TEMPLATE.format(title=title, summary=summary or "（無摘要，僅有標題）")
+
+
+async def analyze_news_sentiment(
+    openai_client: Optional[AsyncOpenAI], title: str, summary: str
+) -> Optional[dict]:
+    """
+    呼叫 LLM 把一則新聞標題/摘要結構化：提取可交易標的代號、一句話摘要、情緒評分(-10~+10)。
+    openai_client 為 None（未設定 OPENAI_API_KEY）時直接跳過，回傳 None，不影響其他功能——
+    這支模塊在沒有金鑰時仍然會抓新聞、去重複，只是不會有情緒分析結果。
+    """
+    if openai_client is None:
+        return None
+
+    try:
+        response = await openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": build_sentiment_prompt(title, summary)}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=300,
+        )
+        parsed = json.loads(response.choices[0].message.content)
+        symbols = [str(s).strip().upper() for s in parsed.get("symbols", []) if s]
+        raw_score = int(parsed.get("sentiment_score", 0))
+        score = max(-10, min(10, raw_score))  # 保險起見再夾一次範圍，避免 LLM 沒照格式回傳
+        return {
+            "symbols": symbols,
+            "summary": str(parsed.get("summary", "")).strip(),
+            "sentiment_score": score,
+        }
+    except Exception as exc:  # noqa: BLE001 - LLM回傳格式不保證、網路也可能失敗，統一捕捉不中斷迴圈
+        logger.warning("新聞情緒分析失敗（%s）：%s", title[:40], exc)
+        return None
+
+
+async def fetch_news_entries() -> List[dict]:
+    """
+    非同步抓取所有設定好的 RSS 來源。feedparser 本身是同步、會阻塞的網路呼叫，
+    用 asyncio.to_thread 丟到執行緒池跑，避免卡住事件迴圈裡其他協程。
+    """
+    entries: List[dict] = []
+    for source_name, feed_url in NEWS_RSS_FEEDS.items():
+        try:
+            parsed = await asyncio.to_thread(feedparser.parse, feed_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RSS 抓取失敗（%s）：%s", source_name, exc)
+            continue
+
+        for entry in parsed.entries:
+            link = entry.get("link")
+            title = entry.get("title")
+            if not link or not title:
+                continue
+            published_struct = entry.get("published_parsed")
+            published_at = (
+                datetime(*published_struct[:6], tzinfo=timezone.utc).isoformat()
+                if published_struct
+                else datetime.now(timezone.utc).isoformat()
+            )
+            entries.append({
+                "source": source_name,
+                "title": title,
+                "url": link,
+                "summary_raw": entry.get("summary", ""),
+                "published_at": published_at,
+            })
+    return entries
+
+
+def _match_open_signals_for_symbol(ticker: str) -> List[dict]:
+    """
+    找出目前「有開倉部位」且跟這個新聞標的代號相符的訊號——同時查主流幣/掃描名單
+    跟美股 ORB 兩組獨立狀態，回傳 [{"kind", "display", "side", "symbol"}, ...]。
+    呼叫端須持有 state.lock。
+    """
+    matches: List[dict] = []
+
+    for symbol, sym_state in state.symbols.items():
+        if sym_state.open_signal is None:
+            continue
+        base = symbol.split("/")[0].upper()
+        if base == ticker:
+            matches.append({"kind": "crypto", "display": symbol, "side": sym_state.open_signal["side"], "symbol": symbol})
+
+    for display_name, ticker_symbol in US_STOCK_SYMBOLS.items():
+        if display_name.upper() != ticker:
+            continue
+        us_state = state.us_stock_states.get(ticker_symbol)
+        if us_state and us_state.open_signal is not None:
+            matches.append(
+                {"kind": "us_stock", "display": display_name, "side": us_state.open_signal["side"], "symbol": ticker_symbol}
+            )
+
+    return matches
+
+
+async def scan_news_agent(openai_client: Optional[AsyncOpenAI]) -> None:
+    """
+    抓新聞 -> 去重複 -> LLM結構化情緒分析 -> 跟現有開倉部位比對是否「技術面+情緒面
+    共振」（部位方向與情緒方向一致，且 |分數| 達到 NEWS_RESONANCE_SCORE_THRESHOLD）
+    -> 共振時推播 Telegram。每輪最多分析 NEWS_MAX_ITEMS_PER_CYCLE 則，控制LLM成本上限。
+    """
+    entries = await fetch_news_entries()
+
+    async with state.lock:
+        seen = set(state.seen_news_urls)
+    new_entries = [e for e in entries if e["url"] not in seen]
+    new_entries.sort(key=lambda e: e["published_at"], reverse=True)  # 優先分析最新的
+    new_entries = new_entries[:NEWS_MAX_ITEMS_PER_CYCLE]
+
+    if not new_entries:
+        return
+
+    resonance_notifications: List[str] = []
+    for entry in new_entries:
+        analysis = await analyze_news_sentiment(openai_client, entry["title"], entry["summary_raw"])
+
+        async with state.lock:
+            state.seen_news_urls.append(entry["url"])
+
+        if analysis is None:
+            continue
+
+        record = {
+            "title": entry["title"],
+            "url": entry["url"],
+            "source": entry["source"],
+            "published_at": entry["published_at"],
+            "symbols": analysis["symbols"],
+            "summary": analysis["summary"],
+            "sentiment_score": analysis["sentiment_score"],
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        async with state.lock:
+            state.news_items.appendleft(record)
+        append_jsonl(NEWS_LOG_PATH, record)
+
+        if abs(analysis["sentiment_score"]) < NEWS_RESONANCE_SCORE_THRESHOLD:
+            continue
+
+        async with state.lock:
+            for ticker in analysis["symbols"]:
+                for match in _match_open_signals_for_symbol(ticker):
+                    side_aligned = (
+                        (match["side"] == "Long" and analysis["sentiment_score"] > 0)
+                        or (match["side"] == "Short" and analysis["sentiment_score"] < 0)
+                    )
+                    if not side_aligned:
+                        continue
+                    resonance_notifications.append(
+                        f"🎯 <b>技術面 + 新聞情緒共振</b>\n"
+                        f"{match['display']}（{match['side']}）\n"
+                        f"情緒評分：{analysis['sentiment_score']:+d}\n"
+                        f"新聞：{analysis['summary']}\n"
+                        f"來源：{entry['source']} － {entry['url']}"
+                    )
+
+    # 推播刻意放在鎖外面，理由同 run_tick
+    for notification in resonance_notifications:
+        await send_telegram_message(notification)
+
+
+async def post_to_x(content: str) -> None:
+    """
+    【預留接口，目前未啟用、也還沒有任何呼叫端在用它】自動發文到 X (Twitter)。
+    標準 HTTP POST 呼叫 X API v2 的 /2/tweets 端點，不引入 tweepy 這個額外依賴，
+    維持跟 send_telegram_message 一樣「直接打 REST API」的風格。
+
+    四個 X_* 環境變數都沒設定時直接跳過，不影響任何其他功能。之後申請到 X
+    Developer 帳號、填好這四個環境變數後，還需要補上 OAuth 1.0a User Context
+    簽名邏輯（X API v2 發文必須簽名，不能只憑 API Key 裸打）才能真的動作——
+    這裡先留 TODO，等實際申請到帳號、確認簽名方式後再補完整實作。
+
+    ⚠️ 啟用前必看：這是會公開發文的函式，呼叫端要自己決定「什麼情況才該發」，
+    這裡不做任何內容審查或發文頻率限制，濫用可能導致帳號被 X 停權。
+    """
+    if not all([X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET]):
+        logger.debug("X_* 環境變數未設定，跳過發文：%s", content[:40])
+        return
+
+    raise NotImplementedError(
+        "post_to_x() 目前只是預留骨架：X_* 環境變數都設定好之後，"
+        "還需要補上 OAuth 1.0a 簽名邏輯才能真的呼叫 X API v2 /2/tweets"
+    )
+
+
+async def news_agent_loop() -> None:
+    """
+    AI 智能投研 Agent 背景迴圈：獨立於其他所有模塊，每 NEWS_SCAN_INTERVAL_SECONDS
+    秒跑一次 scan_news_agent。沒設定 OPENAI_API_KEY 時，client 是 None，迴圈照樣會
+    跑（抓新聞、去重複），只是不會有情緒分析結果——不會因為沒設金鑰就整支掛掉。
+    """
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+    if openai_client is None:
+        logger.warning("未設定 OPENAI_API_KEY，AI 新聞情緒分析模塊將只抓新聞、不做情緒分析")
+
+    while True:
+        try:
+            await scan_news_agent(openai_client)
+        except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
+            logger.error("AI新聞Agent背景迴圈發生錯誤：%s", exc)
+
+        await asyncio.sleep(NEWS_SCAN_INTERVAL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # 7. 多標的追蹤名單管理
 # ---------------------------------------------------------------------------
 
@@ -1714,6 +1994,8 @@ def save_state_snapshot() -> None:
                 if s.open_signal is not None or s.triggered_date is not None
             },
             "us_stock_history": list(state.us_stock_history),
+            "news_items": list(state.news_items),
+            "seen_news_urls": list(state.seen_news_urls),
         }
         os.makedirs(LOG_DIR, exist_ok=True)
         tmp_path = STATE_SNAPSHOT_PATH + ".tmp"
@@ -1757,18 +2039,22 @@ def load_state_snapshot() -> None:
             us_state.triggered_date = data.get("triggered_date")
 
         state.us_stock_history.extend(snapshot.get("us_stock_history", []))
+        state.news_items.extend(snapshot.get("news_items", []))
+        state.seen_news_urls.extend(snapshot.get("seen_news_urls", []))
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
         restored_us_stock_positions = sum(
             1 for d in snapshot.get("us_stock_states", {}).values() if d.get("open_signal")
         )
         logger.info(
-            "已從快照恢復狀態：%d 筆持倉中部位、%d 筆歷史紀錄、%d 檔掃描名單、%d 筆迷因警報、%d 筆美股ORB部位",
+            "已從快照恢復狀態：%d 筆持倉中部位、%d 筆歷史紀錄、%d 檔掃描名單、%d 筆迷因警報、"
+            "%d 筆美股ORB部位、%d 則已分析新聞",
             restored_positions,
             len(state.history),
             len(state.scan_universe),
             len(state.meme_alerts),
             restored_us_stock_positions,
+            len(state.news_items),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("讀取狀態快照失敗，將從全新狀態啟動：%s", exc)
@@ -1810,12 +2096,20 @@ async def lifespan(app: FastAPI):
         US_MARKET_CLOSE.strftime("%H:%M"),
     )
 
+    news_agent_task = asyncio.create_task(news_agent_loop())
+    logger.info(
+        "AI 智能投研 Agent 背景迴圈已啟動（新聞來源：%s，每 %d 秒一輪）",
+        ", ".join(NEWS_RSS_FEEDS.keys()),
+        NEWS_SCAN_INTERVAL_SECONDS,
+    )
+
     try:
         yield
     finally:
         monitor_task.cancel()
         us_stock_task.cancel()
-        for task in (monitor_task, us_stock_task):
+        news_agent_task.cancel()
+        for task in (monitor_task, us_stock_task, news_agent_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -2147,6 +2441,18 @@ async def get_us_stock_history() -> USStockHistoryResponse:
             win_rate_pct=round(win_rate, 2),
         ),
     )
+
+
+@app.get("/api/ai-agent/news", response_model=NewsAgentResponse)
+async def get_ai_agent_news() -> NewsAgentResponse:
+    """
+    AI 智能投研 Agent（獨立模塊，實驗性）：回傳最近處理過的新聞，依處理時間新到舊
+    排序。未設定 OPENAI_API_KEY 時這裡會一直是空的（新聞有抓，但沒有情緒分析結果
+    就不會寫進 state.news_items）。
+    """
+    async with state.lock:
+        items = [NewsItemResponse(**item) for item in state.news_items]
+    return NewsAgentResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
 @app.get("/api/health")
