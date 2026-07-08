@@ -2524,9 +2524,13 @@ async def get_ai_agent_news() -> NewsAgentResponse:
     return NewsAgentResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health_check() -> dict:
-    """簡單的健康檢查端點，方便前端或監控工具確認服務存活。"""
+    """
+    簡單的健康檢查端點，方便前端或監控工具確認服務存活。同時支援 GET/HEAD——
+    像 UptimeRobot 這類外部監控工具預設會送 HEAD 請求，只註冊 GET 的話每次
+    健康檢查都會收到 405，被誤判成服務掛掉（實際上服務是正常的）。
+    """
     return {
         "status": "ok",
         "active_exchange": state.active_exchange_name,
