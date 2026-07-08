@@ -113,6 +113,13 @@ ATR_PERIOD = 14              # ATR 週期
 ATR_SL_MULTIPLIER = 1.5      # 止損 = ATR * 倍數
 RISK_REWARD_RATIO = 2.0      # 止盈距離 = 止損距離 * 盈虧比
 
+# 市場掃描名單裡的小幣種偶爾會出現真實的暴漲暴跌（例如短時間內腰斬），把 ATR
+# 撐到跟進場價同個量級，此時止損距離會超過100%、止盈價甚至會被減成負數（一個
+# 不可能達成的目標，因為真實價格不可能是負的）。這個門檻在 ATR 模型算出的止損
+# 距離「本身」超過進場價的這個百分比時，直接視為這隻幣現在太不正常、不產生訊號，
+# 比事後才發現止盈是負的、部位卡住永遠平不了倉安全。
+MAX_SANE_STOP_LOSS_PCT = 50.0
+
 FIXED_RISK_PCT = 15.0        # 固定風險模型：單筆爆倉風險目標百分比
 MIN_LEVERAGE = 1
 MAX_LEVERAGE = 20
@@ -679,10 +686,20 @@ def detect_new_signal(df: pd.DataFrame) -> Optional[dict]:
     long_breakout = last["close"] > last["donchian_upper"] and volume_confirmed
     short_breakout = last["close"] < last["donchian_lower"] and volume_confirmed
 
+    entry_price = float(last["close"])
+    atr = float(last["atr"])
+
+    # 防呆：ATR 算出來的止損距離本身就先超過進場價的 MAX_SANE_STOP_LOSS_PCT，
+    # 代表這隻幣現在處於不正常的暴漲暴跌，不適合套用這套風險模型，直接不產生訊號
+    # （細節見 MAX_SANE_STOP_LOSS_PCT 定義處的說明）。
+    projected_sl_pct = (atr * ATR_SL_MULTIPLIER) / entry_price * 100 if entry_price > 0 else float("inf")
+    if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT:
+        return None
+
     if long_breakout and uptrend:
-        return {"side": "Long", "entry_price": float(last["close"]), "atr": float(last["atr"])}
+        return {"side": "Long", "entry_price": entry_price, "atr": atr}
     if short_breakout and downtrend:
-        return {"side": "Short", "entry_price": float(last["close"]), "atr": float(last["atr"])}
+        return {"side": "Short", "entry_price": entry_price, "atr": atr}
     return None
 
 
@@ -2522,6 +2539,47 @@ async def get_ai_agent_news() -> NewsAgentResponse:
     async with state.lock:
         items = [NewsItemResponse(**item) for item in state.news_items]
     return NewsAgentResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
+
+
+# --- 【一次性維運用途，用完即刪】強制平倉一筆卡住的舊部位 ---
+# LAB/USDT:USDT 因為 MAX_SANE_STOP_LOSS_PCT 防呆修復前產生了一筆止盈價格為負數
+# （永遠不可能觸及）的假訊號，需要手動用當下市價結算掉。用 ADMIN_TOKEN 環境變數
+# 比對，避免公開網站被任意呼叫操作；用完這次就會在下一個 commit 整段移除。
+@app.post("/api/admin/force-close-signal")
+async def admin_force_close_signal(symbol: str, token: str) -> dict:
+    admin_token = os.environ.get("ADMIN_TOKEN", "").strip()
+    if not admin_token or token != admin_token:
+        raise HTTPException(status_code=403, detail="unauthorized")
+
+    async with state.lock:
+        sym_state = state.symbols.get(symbol)
+        if sym_state is None or sym_state.open_signal is None:
+            raise HTTPException(status_code=404, detail="no open signal for this symbol")
+        current_price = sym_state.current_price
+        if current_price is None:
+            raise HTTPException(status_code=400, detail="no current price available")
+
+        signal = sym_state.open_signal
+        side = signal["side"]
+        raw_pnl_pct = (current_price - signal["entry_price"]) / signal["entry_price"] * 100
+        if side == "Short":
+            raw_pnl_pct = -raw_pnl_pct
+        pnl_pct = raw_pnl_pct * signal["leverage"]
+        result = "WIN" if pnl_pct >= 0 else "LOSS"
+
+        closed_record = {
+            **signal,
+            "exit_price": current_price,
+            "result": result,
+            "pnl_pct": pnl_pct,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        state.history.appendleft(closed_record)
+        sym_state.open_signal = None
+        append_jsonl(TRADE_LOG_PATH, closed_record)
+        save_state_snapshot()
+
+    return {"closed": closed_record}
 
 
 @app.api_route("/api/health", methods=["GET", "HEAD"])

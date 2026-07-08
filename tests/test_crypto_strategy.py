@@ -33,6 +33,16 @@ def test_no_signal_with_insufficient_history(ohlcv_factory):
     assert detect_new_signal(df) is None
 
 
+def test_no_signal_when_atr_implies_absurd_stop_loss(ohlcv_factory):
+    # 真實發生過的案例：LAB/USDT:USDT 暴漲暴跌把 ATR 撐到接近進場價本身，導致
+    # ATR模型算出的止損距離超過100%、止盈甚至被減成負數（不可能觸及的價格）。
+    # high_low_range 調大來模擬這種「相對價格而言波動異常劇烈」的K棒。
+    df = add_indicators(
+        ohlcv_factory(direction="up", breakout=True, volume_spike=True, high_low_range=80.0)
+    )
+    assert detect_new_signal(df) is None
+
+
 def test_build_open_signal_long_tp_above_sl_below_entry():
     signal = {"side": "Long", "entry_price": 100.0, "atr": 2.0}
     opened = build_open_signal("BTC/USDT:USDT", signal)
