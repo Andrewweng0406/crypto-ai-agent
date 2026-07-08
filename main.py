@@ -71,6 +71,7 @@ from datetime import datetime, timezone
 from math import floor
 from typing import Deque, Dict, List, Literal, Optional
 
+import aiohttp
 import ccxt.async_support as ccxt
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -157,6 +158,13 @@ MEME_ALERT_LOG_PATH = os.path.join(LOG_DIR, "meme_alert_log.jsonl")
 # JSON，啟動時讀回來。夠這個專案的規模用，不需要真的上資料庫。
 STATE_SNAPSHOT_PATH = os.path.join(LOG_DIR, "state_snapshot.json")
 
+# --- Telegram 推播（新訊號產生、訊號結算、迷因幣爆量時主動通知） ---
+# 兩個環境變數都沒設時，推播功能整個跳過（不影響其他功能），本機開發預設
+# 不用管這個。設定方式：跟 @BotFather 聊天建立一個 bot 拿到 TOKEN，
+# 用該 bot 傳一句話給自己後查 getUpdates 拿到 CHAT_ID。
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
+
 # --- 測試用途 ---
 # 設定環境變數 DEBUG_FORCE_SIGNAL=long（或 short）可以跳過策略偵測，
 # 直接用當下即時價格生成一筆假訊號，方便在本地測試前端畫面，
@@ -185,6 +193,29 @@ def append_jsonl(path: str, record: dict) -> None:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:  # noqa: BLE001
         logger.warning("寫入紀錄檔失敗（%s）：%s", path, exc)
+
+
+async def send_telegram_message(text: str) -> None:
+    """
+    推播一則訊息到 Telegram。沒設定 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 時直接
+    跳過。刻意設計成呼叫端絕對不能在持有 state.lock 時呼叫這個函式——它是一次
+    真正的網路請求，扣著鎖去等外部服務回應，會卡住其他正在等鎖的 API 讀取請求。
+    送失敗只記警告，不影響背景迴圈繼續運作。
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.post(
+                url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("Telegram 推播失敗（狀態碼 %s）：%s", resp.status, body)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Telegram 推播失敗：%s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +766,7 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
         snapshot = compute_volume_snapshot(closed_df)
         is_spike = snapshot is not None and snapshot["volume_multiple"] >= MEME_VOLUME_SPIKE_MULT
 
+        new_alert: Optional[dict] = None
         async with state.lock:
             meme_state = state.get_meme_state(symbol)
             if snapshot is not None:
@@ -760,8 +792,17 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
                         snapshot["volume_multiple"],
                         snapshot["price"],
                     )
+                    new_alert = alert_record
             else:
                 meme_state.alert_active = False  # 量能回落，重置狀態，下次再爆量才會算新警報
+
+        # 推播放在鎖外面，理由同 run_tick
+        if new_alert is not None:
+            await send_telegram_message(
+                f"🚨 <b>迷因幣爆量</b>\n{new_alert['symbol']}\n"
+                f"成交量達24h均量 {new_alert['volume_multiple']:.1f} 倍\n"
+                f"價格：{new_alert['price']:.8f}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -833,12 +874,17 @@ async def build_tracked_symbols() -> List[str]:
 # 8. 背景監控迴圈
 # ---------------------------------------------------------------------------
 
-async def evaluate_open_signal(symbol: str, current_price: float) -> None:
-    """檢查該標的目前持有中的訊號是否已觸及止盈/止損，若是則結算並寫入歷史。呼叫端須持有 state.lock。"""
+async def evaluate_open_signal(symbol: str, current_price: float) -> Optional[str]:
+    """
+    檢查該標的目前持有中的訊號是否已觸及止盈/止損，若是則結算並寫入歷史。
+    呼叫端須持有 state.lock。回傳值是「這次有結算的話，要推播的通知文字」或
+    None——刻意用回傳值而不是在這裡直接送 Telegram，因為這個函式是在鎖裡面
+    跑的，網路請求不能卡在鎖裡面。
+    """
     sym_state = state.get_symbol_state(symbol)
     signal = sym_state.open_signal
     if signal is None:
-        return
+        return None
 
     side = signal["side"]
     take_profit = signal["take_profit"]
@@ -848,7 +894,7 @@ async def evaluate_open_signal(symbol: str, current_price: float) -> None:
     hit_sl = current_price <= stop_loss if side == "Long" else current_price >= stop_loss
 
     if not (hit_tp or hit_sl):
-        return
+        return None
 
     result: Literal["WIN", "LOSS"] = "WIN" if hit_tp else "LOSS"
     exit_price = take_profit if hit_tp else stop_loss
@@ -869,6 +915,13 @@ async def evaluate_open_signal(symbol: str, current_price: float) -> None:
     sym_state.open_signal = None
     append_jsonl(TRADE_LOG_PATH, closed_record)
     logger.info("訊號結算：%s %s，結果=%s，損益=%.2f%%", symbol, side, result, pnl_pct)
+
+    emoji = "✅" if result == "WIN" else "❌"
+    return (
+        f"{emoji} <b>訊號結算</b>\n{symbol} {side}\n"
+        f"結果：{result}\n進場：{signal['entry_price']:.4f} → 出場：{exit_price:.4f}\n"
+        f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
+    )
 
 
 async def refresh_major_smart_money(exchange_pool: dict) -> None:
@@ -1013,6 +1066,14 @@ async def deep_scan_symbol(exchange_pool: dict, symbol: str) -> None:
         )
     else:
         logger.info("新訊號產生：%s %s @ %.2f", symbol, candidate["side"], candidate["entry_price"])
+        opened = sym_state.open_signal
+        emoji = "🟢" if candidate["side"] == "Long" else "🔴"
+        await send_telegram_message(
+            f"{emoji} <b>新訊號</b>\n{symbol} {candidate['side']}\n"
+            f"進場：{opened['entry_price']:.4f}\n"
+            f"停利：{opened['take_profit']:.4f} ／ 停損：{opened['stop_loss']:.4f}\n"
+            f"槓桿：{opened['leverage']}x"
+        )
 
 
 async def run_tick(exchange_pool: dict) -> None:
@@ -1035,13 +1096,20 @@ async def run_tick(exchange_pool: dict) -> None:
         prices = {}
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    settlement_notifications: List[str] = []
     async with state.lock:
         for symbol, price in prices.items():
             sym_state = state.get_symbol_state(symbol)
             sym_state.current_price = price
-            await evaluate_open_signal(symbol, price)
+            notification = await evaluate_open_signal(symbol, price)
+            if notification:
+                settlement_notifications.append(notification)
             sym_state.last_updated = now_iso
         state.last_tick_at = now_iso
+
+    # 推播刻意放在鎖外面，避免等 Telegram 回應時卡住其他正在等鎖的請求
+    for notification in settlement_notifications:
+        await send_telegram_message(notification)
 
     await refresh_major_smart_money(exchange_pool)
 
