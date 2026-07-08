@@ -295,6 +295,126 @@ export const fallbackHistory: { trades: HistorySignal[]; stats: HistoryStats } =
   stats: { totalTrades: 5, wins: 3, losses: 2, winRatePct: 60 },
 }
 
+// ---------------------------------------------------------------------------
+// 美股 ORB 當沖（獨立模塊，實驗性策略）：跟上面的主流幣/迷因幣完全分開，
+// 有自己的開盤區間/RVOL/大盤濾網欄位，OPEN 狀態下的 signal 形狀則刻意沿用
+// 跟主流幣一樣的 Signal type，這樣 HeroSignal / PriceLevels / PriceRangeGauge
+// 三個既有元件可以直接重用，不用重寫一份。
+// ---------------------------------------------------------------------------
+
+export interface BackendUSStockResponse {
+  symbol: string
+  display_name: string
+  status: "OPEN" | "NO_SIGNAL"
+  side: Side | null
+  entry_price: number | null
+  current_price: number | null
+  take_profit: number | null
+  stop_loss: number | null
+  stop_loss_pct: number | null
+  leverage: number | null
+  risk_reward_ratio: number | null
+  opened_at: string | null
+  day_change_pct: number | null
+  updated_at: string
+  opening_high: number | null
+  opening_low: number | null
+  rvol: number | null
+  market_regime: "Bullish" | "Bearish" | "Neutral"
+}
+
+export interface BackendUSStockListResponse {
+  market_session: "OPEN" | "CLOSED"
+  market_regime: "Bullish" | "Bearish" | "Neutral"
+  stocks: BackendUSStockResponse[]
+  updated_at: string | null
+}
+
+// 沒有部位時，前端仍要能畫「離開盤區間邊界多遠」的進度條 + RVOL/大盤濾網卡片，
+// 跟主流幣 Monitoring 同樣的「監控快照」精神，只是欄位換成 ORB 專屬的。
+export interface OrbMonitoring {
+  openingHigh: number | null
+  openingLow: number | null
+  rvol: number | null
+  dayChangePct: number | null
+  marketRegime: "Bullish" | "Bearish" | "Neutral"
+}
+
+export interface USStockSignalState {
+  status: "OPEN" | "NO_SIGNAL"
+  symbol: string
+  displayName: string
+  currentPrice: number | null
+  updatedAt: string
+  signal: Signal | null
+  orbMonitoring: OrbMonitoring
+}
+
+function adaptOrbMonitoring(raw: BackendUSStockResponse): OrbMonitoring {
+  return {
+    openingHigh: raw.opening_high,
+    openingLow: raw.opening_low,
+    rvol: raw.rvol,
+    dayChangePct: raw.day_change_pct,
+    marketRegime: raw.market_regime,
+  }
+}
+
+export function adaptUSStock(raw: BackendUSStockResponse): USStockSignalState {
+  const orbMonitoring = adaptOrbMonitoring(raw)
+
+  if (
+    raw.status !== "OPEN" ||
+    raw.side === null ||
+    raw.entry_price === null ||
+    raw.take_profit === null ||
+    raw.stop_loss === null ||
+    raw.leverage === null
+  ) {
+    return {
+      status: "NO_SIGNAL",
+      symbol: raw.symbol,
+      displayName: raw.display_name,
+      currentPrice: raw.current_price,
+      updatedAt: raw.updated_at,
+      signal: null,
+      orbMonitoring,
+    }
+  }
+
+  return {
+    status: "OPEN",
+    symbol: raw.symbol,
+    displayName: raw.display_name,
+    currentPrice: raw.current_price,
+    updatedAt: raw.updated_at,
+    orbMonitoring,
+    signal: {
+      symbol: raw.display_name,
+      side: raw.side,
+      current_price: raw.current_price ?? raw.entry_price,
+      entry_price: raw.entry_price,
+      leverage: raw.leverage,
+      tp: raw.take_profit,
+      sl: raw.stop_loss,
+      timestamp: raw.opened_at ?? raw.updated_at,
+      smartMoneyNotes: [],
+    },
+  }
+}
+
+export function adaptUSStockList(raw: BackendUSStockListResponse): {
+  marketSession: "OPEN" | "CLOSED"
+  marketRegime: "Bullish" | "Bearish" | "Neutral"
+  stocks: USStockSignalState[]
+} {
+  return {
+    marketSession: raw.market_session,
+    marketRegime: raw.market_regime,
+    stocks: raw.stocks.map(adaptUSStock),
+  }
+}
+
 export function formatPrice(value: number): string {
   // Market-scan and meme-radar symbols can be sub-$1 (DOGE ~$0.075) or
   // sub-cent (PEPE ~$0.0000027) — a fixed 2-decimal format would round

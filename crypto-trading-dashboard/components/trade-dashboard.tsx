@@ -8,12 +8,14 @@ import {
   adaptMemeAlerts,
   adaptMemeWatchlist,
   adaptSignalList,
+  adaptUSStockList,
   fallbackHistory,
   formatPrice,
   formatTime,
   type BackendHistoryResponse,
   type BackendMemeRadarResponse,
   type BackendSignalListResponse,
+  type BackendUSStockListResponse,
   type Universe,
 } from "@/lib/signals"
 import { HeroSignal } from "@/components/hero-signal"
@@ -25,6 +27,8 @@ import { SymbolWatchlist } from "@/components/symbol-watchlist"
 import { OpportunityList } from "@/components/opportunity-list"
 import { MemeRadar } from "@/components/meme-radar"
 import { MonitoringPanel } from "@/components/monitoring-panel"
+import { USStockWatchlist } from "@/components/us-stock-watchlist"
+import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -33,14 +37,15 @@ const fetcher = (url: string) =>
     return body
   })
 
-// Meme radar is a separate feature (pure volume-spike alerts, no trading
-// signal shape), so the tab key extends beyond the /api/signals `Universe`.
-type TabKey = Universe | "meme"
+// 迷因雷達、美股ORB都是獨立模塊（跟主流幣不同的資料形狀），tab key 因此延伸出
+// /api/signals 的 Universe 之外。
+type TabKey = Universe | "meme" | "usStock"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "major", label: "主流幣" },
   { key: "scan", label: "市場掃描" },
   { key: "meme", label: "迷因雷達" },
+  { key: "usStock", label: "美股 ORB" },
 ]
 
 export function TradeDashboard() {
@@ -48,14 +53,17 @@ export function TradeDashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
 
   const isMemeMode = mode === "meme"
+  const isUSStockMode = mode === "usStock"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
-  } = useSWR<BackendSignalListResponse>(isMemeMode ? null : `/api/signals?universe=${mode}`, fetcher, {
-    refreshInterval: mode === "major" ? 5000 : 12000,
-  })
+  } = useSWR<BackendSignalListResponse>(
+    isMemeMode || isUSStockMode ? null : `/api/signals?universe=${mode}`,
+    fetcher,
+    { refreshInterval: mode === "major" ? 5000 : 12000 },
+  )
 
   const {
     data: rawMemes,
@@ -65,6 +73,14 @@ export function TradeDashboard() {
     refreshInterval: 15000,
   })
 
+  const {
+    data: rawUSStocks,
+    error: usStocksError,
+    isLoading: usStocksLoading,
+  } = useSWR<BackendUSStockListResponse>(isUSStockMode ? "/api/us-stock-orb" : null, fetcher, {
+    refreshInterval: 3000,
+  })
+
   const { data: rawHistory, error: historyError } = useSWR<BackendHistoryResponse>("/api/history", fetcher, {
     refreshInterval: 15000,
   })
@@ -72,12 +88,29 @@ export function TradeDashboard() {
   const signals = useMemo(() => (rawSignals ? adaptSignalList(rawSignals) : []), [rawSignals])
   const memeAlerts = useMemo(() => (rawMemes ? adaptMemeAlerts(rawMemes) : []), [rawMemes])
   const memeWatchlist = useMemo(() => (rawMemes ? adaptMemeWatchlist(rawMemes) : []), [rawMemes])
+  const usStockData = useMemo(
+    () => (rawUSStocks ? adaptUSStockList(rawUSStocks) : { marketSession: "CLOSED" as const, marketRegime: "Neutral" as const, stocks: [] }),
+    [rawUSStocks],
+  )
   const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
 
   // Keep the selection sane across tab switches and data refreshes: default
   // to the first open opportunity, and re-pick if the current selection
   // disappears (its signal closed, or it dropped out of the scan ranking).
   useEffect(() => {
+    if (isUSStockMode) {
+      if (usStockData.stocks.length === 0) {
+        setSelectedSymbol(null)
+        return
+      }
+      const stillPresent = usStockData.stocks.some((s) => s.symbol === selectedSymbol)
+      if (!stillPresent) {
+        const firstOpen = usStockData.stocks.find((s) => s.status === "OPEN")
+        setSelectedSymbol((firstOpen ?? usStockData.stocks[0]).symbol)
+      }
+      return
+    }
+
     if (signals.length === 0) {
       setSelectedSymbol(null)
       return
@@ -87,13 +120,18 @@ export function TradeDashboard() {
       const firstOpen = signals.find((s) => s.status === "OPEN")
       setSelectedSymbol((firstOpen ?? signals[0]).symbol)
     }
-  }, [signals, selectedSymbol])
+  }, [signals, usStockData, isUSStockMode, selectedSymbol])
 
   const selected = signals.find((s) => s.symbol === selectedSymbol) ?? null
+  const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
 
-  const activeError = isMemeMode ? memesError : signalsError
-  const activeLoading = isMemeMode ? memesLoading : signalsLoading
-  const isConnected = isMemeMode ? !memesError && !!rawMemes : !signalsError && !!rawSignals
+  const activeError = isMemeMode ? memesError : isUSStockMode ? usStocksError : signalsError
+  const activeLoading = isMemeMode ? memesLoading : isUSStockMode ? usStocksLoading : signalsLoading
+  const isConnected = isMemeMode
+    ? !memesError && !!rawMemes
+    : isUSStockMode
+      ? !usStocksError && !!rawUSStocks
+      : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -146,6 +184,83 @@ export function TradeDashboard() {
           <p className="text-center text-xs text-muted-foreground">
             迷因幣雷達為獨立功能：純粹偵測 PEPE / WIF / DOGE 現貨的成交量異常放大，不是交易訊號，沒有方向、槓桿或
             TP/SL。
+          </p>
+        </>
+      ) : isUSStockMode ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 bg-card/60 px-4 py-2.5 text-xs">
+            <span className="flex items-center gap-1.5">
+              <span
+                className={`size-1.5 rounded-full ${usStockData.marketSession === "OPEN" ? "bg-long" : "bg-muted-foreground"}`}
+                aria-hidden="true"
+              />
+              美股當沖時段：{usStockData.marketSession === "OPEN" ? "開盤中" : "休市中（美東 09:15-16:00 才運作）"}
+            </span>
+            <span className="text-muted-foreground">
+              大盤濾網（NASDAQ100）：
+              <span
+                className={
+                  usStockData.marketRegime === "Bullish"
+                    ? "text-long"
+                    : usStockData.marketRegime === "Bearish"
+                      ? "text-short"
+                      : "text-foreground"
+                }
+              >
+                {" "}
+                {usStockData.marketRegime === "Bullish" ? "偏多" : usStockData.marketRegime === "Bearish" ? "偏空" : "中性"}
+              </span>
+            </span>
+          </div>
+
+          <USStockWatchlist stocks={usStockData.stocks} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
+
+          {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal ? (
+            <HeroSignal signal={selectedUSStock.signal} />
+          ) : selectedUSStock ? (
+            <NoActiveSignal
+              symbol={selectedUSStock.displayName}
+              currentPrice={selectedUSStock.currentPrice}
+              updatedAt={selectedUSStock.updatedAt}
+            />
+          ) : (
+            !usStocksError && (
+              <div className="rounded-2xl border border-dashed border-border/60 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+                資料載入中…
+              </div>
+            )
+          )}
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+            <div className="flex flex-col gap-5 lg:col-span-2">
+              {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal ? (
+                <>
+                  <SignalChart signal={selectedUSStock.signal} candleSymbol={selectedUSStock.symbol} timeframe="15m" />
+                  <PriceRangeGauge signal={selectedUSStock.signal} />
+                </>
+              ) : selectedUSStock ? (
+                <USStockMonitoringPanel
+                  monitoring={selectedUSStock.orbMonitoring}
+                  currentPrice={selectedUSStock.currentPrice}
+                />
+              ) : (
+                <div className="flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
+                  <Radar className="size-6" aria-hidden="true" />
+                  選一檔美股查看開盤區間監控，或等待引擎掃描到新的 ORB 訊號。
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col gap-5">
+              {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal && (
+                <PriceLevels signal={selectedUSStock.signal} />
+              )}
+            </div>
+          </div>
+
+          <p className="text-center text-xs text-muted-foreground">
+            美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，
+            <strong className="text-foreground">尚未經過回測驗證，勝率未知</strong>
+            ，標的為 BingX 代幣化美股商品（TSLA/NVDA/MSTR/SOXL/TQQQ），僅在美東交易時段運作。
           </p>
         </>
       ) : (

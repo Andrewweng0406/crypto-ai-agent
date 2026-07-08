@@ -5,16 +5,17 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000"
 export async function GET(request: NextRequest) {
   const symbol = request.nextUrl.searchParams.get("symbol")
   const limit = request.nextUrl.searchParams.get("limit") ?? "60"
+  const timeframe = request.nextUrl.searchParams.get("timeframe")
 
   if (!symbol) {
     return NextResponse.json({ detail: "missing symbol" }, { status: 400 })
   }
 
+  const qs = new URLSearchParams({ symbol, limit })
+  if (timeframe) qs.set("timeframe", timeframe)
+
   try {
-    const res = await fetch(
-      `${BACKEND_URL}/api/candles?symbol=${encodeURIComponent(symbol)}&limit=${encodeURIComponent(limit)}`,
-      { cache: "no-store" },
-    )
+    const res = await fetch(`${BACKEND_URL}/api/candles?${qs.toString()}`, { cache: "no-store" })
     const body = await res.json()
     return NextResponse.json(body, { status: res.status })
   } catch {

@@ -11,8 +11,20 @@ const fetcher = (url: string) =>
     return body
   })
 
-export function SignalChart({ signal }: { signal: Signal }) {
+interface SignalChartProps {
+  signal: Signal
+  // ORB 面板的 signal.symbol 是給人看的乾淨代號（如 TSLA），不是後端真正的
+  // ccxt 符號，抓K線要用真正的符號；timeframe 同理（ORB 用 15m，主流幣預設4h）。
+  candleSymbol?: string
+  timeframe?: string
+}
+
+export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProps) {
   const isLong = signal.side === "Long"
+  const symbolForCandles = candleSymbol ?? signal.symbol
+
+  const candlesQuery = new URLSearchParams({ symbol: symbolForCandles, limit: "60" })
+  if (timeframe) candlesQuery.set("timeframe", timeframe)
 
   // Real OHLCV from the same backend the strategy itself scans — this used to
   // be a deterministic pseudo-random walk purely for decoration; TP/SL/current
@@ -21,7 +33,7 @@ export function SignalChart({ signal }: { signal: Signal }) {
     data: rawCandles,
     error,
     isLoading,
-  } = useSWR<BackendCandlesResponse>(`/api/candles?symbol=${encodeURIComponent(signal.symbol)}&limit=60`, fetcher, {
+  } = useSWR<BackendCandlesResponse>(`/api/candles?${candlesQuery.toString()}`, fetcher, {
     refreshInterval: 60_000,
   })
 
