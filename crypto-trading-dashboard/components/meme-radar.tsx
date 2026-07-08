@@ -8,6 +8,20 @@ function shortSymbol(symbol: string): string {
   return symbol.replace("/USDT", "")
 }
 
+// 同樣是爆量，拉盤跟砸盤方向完全相反，只看量能倍數看不出來，一定要標方向。
+function ChangeBadge({ pct }: { pct: number | null }) {
+  if (pct === null) {
+    return <span className="font-mono text-xs text-muted-foreground">—</span>
+  }
+  const isUp = pct >= 0
+  return (
+    <span className={cn("font-mono text-xs font-semibold", isUp ? "text-long" : "text-short")}>
+      {isUp ? "+" : ""}
+      {pct.toFixed(1)}%
+    </span>
+  )
+}
+
 interface MemeRadarProps {
   alerts: MemeAlert[]
   watchlist: MemeWatchItem[]
@@ -53,6 +67,14 @@ export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProp
               <span className="font-mono text-lg font-bold">
                 {item.price !== null ? `$${formatPrice(item.price)}` : "—"}
               </span>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  1h <ChangeBadge pct={item.change1hPct} />
+                </span>
+                <span className="flex items-center gap-1">
+                  24h <ChangeBadge pct={item.change24hPct} />
+                </span>
+              </div>
             </div>
           )
         })}
@@ -65,27 +87,39 @@ export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProp
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {alerts.map((alert, i) => (
-            <div
-              key={`${alert.symbol}-${alert.triggeredAt}-${i}`}
-              className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card px-4 py-3.5"
-            >
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-1 rounded-full bg-short/15 px-2.5 py-1 text-xs font-semibold uppercase text-short">
-                  <Flame className="size-3.5" aria-hidden="true" />
-                  爆量
-                </span>
-                <div className="flex flex-col">
-                  <span className="font-mono text-sm font-semibold">{shortSymbol(alert.symbol)}</span>
-                  <span className="text-xs text-muted-foreground">{formatTime(alert.triggeredAt)}</span>
+          {alerts.map((alert, i) => {
+            const isPump = (alert.change1hPct ?? 0) >= 0
+            return (
+              <div
+                key={`${alert.symbol}-${alert.triggeredAt}-${i}`}
+                className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card px-4 py-3.5"
+              >
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold uppercase",
+                      isPump ? "bg-long/15 text-long" : "bg-short/15 text-short",
+                    )}
+                  >
+                    <Flame className="size-3.5" aria-hidden="true" />
+                    {isPump ? "爆量拉盤" : "爆量砸盤"}
+                  </span>
+                  <div className="flex flex-col">
+                    <span className="font-mono text-sm font-semibold">{shortSymbol(alert.symbol)}</span>
+                    <span className="text-xs text-muted-foreground">{formatTime(alert.triggeredAt)}</span>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-0.5">
+                  <span className={cn("font-mono text-sm font-semibold", isPump ? "text-long" : "text-short")}>
+                    {alert.volumeMultiple.toFixed(1)}x 均量
+                  </span>
+                  <span className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+                    ${formatPrice(alert.price)} · <ChangeBadge pct={alert.change1hPct} /> (1h)
+                  </span>
                 </div>
               </div>
-              <div className="flex flex-col items-end gap-0.5">
-                <span className="font-mono text-sm font-semibold text-short">{alert.volumeMultiple.toFixed(1)}x 均量</span>
-                <span className="font-mono text-xs text-muted-foreground">${formatPrice(alert.price)}</span>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

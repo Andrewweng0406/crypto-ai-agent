@@ -38,12 +38,16 @@ AI 交易訊號後端服務
   - 這些數據不會直接產生訊號，而是作為「否決濾網」：當技術面觸發 Long/Short，
     但聰明錢數據明顯反向時，會否決該次訊號，降低逆勢單的比例。
 
-迷因幣雷達（MEME_SYMBOLS，完全獨立模塊）：
-  - 監控 PEPE/WIF/DOGE 現貨（不是合約，單純看資金關注度，不需要槓桿概念）。
+迷因幣雷達（獨立模塊）：
+  - 監控名單是動態的：從 MEME_CANDIDATE_SYMBOLS 候選池（人工確認過 BingX 現貨
+    真的有掛牌的迷因幣）依 24h 成交量排名，取前 MEME_UNIVERSE_SIZE 大，每
+    MEME_UNIVERSE_REFRESH_SECONDS 秒重新排名一次——死守固定幾檔會漏掉大部分
+    真正在爆量的迷因幣。監控現貨（不是合約，單純看資金關注度，不需要槓桿概念）。
   - 1 小時線，每 MEME_SCAN_INTERVAL_SECONDS 秒檢查一次：當根成交量若達過去
-    24 小時均量的 MEME_VOLUME_SPIKE_MULT 倍以上，記錄一筆「爆量警報」。
+    24 小時均量的 MEME_VOLUME_SPIKE_MULT 倍以上，記錄一筆「爆量警報」，同時
+    算出 1h/24h 漲跌幅，讓爆量當下能分辨是拉盤還是砸盤。
   - 這不是交易訊號，沒有方向/TP/SL/槓桿，只回答「現在哪個迷因幣資金明顯
-    異常湧入」，跟上面主流幣策略的資料流、狀態、API 完全分開，互不影響。
+    異常湧入、往哪個方向」，跟上面主流幣策略的資料流、狀態、API 完全分開。
 
 背景任務：
   - 使用 FastAPI lifespan + asyncio.create_task 啟動一個永遠執行的背景迴圈：
@@ -143,9 +147,25 @@ OI_CHANGE_SIGNIFICANT_PCT = 2.0  # 未平倉量變化超過此百分比才視為
 
 # --- 迷因幣雷達（獨立模塊，不影響上面主流幣策略的邏輯與資料流） ---
 # 這是純粹的「爆量警報」，不是交易訊號：沒有 TP/SL、沒有槓桿計算，只回報
-# 「哪個幣現在成交量異常放大」。用現貨（不是合約），因為只是要看資金關注度，
-# 不需要合約才有的槓桿/爆倉概念。
-MEME_SYMBOLS = ["PEPE/USDT", "WIF/USDT", "DOGE/USDT"]
+# 「哪個幣現在成交量異常放大、是拉盤還是砸盤」。用現貨（不是合約），因為只是要看
+# 資金關注度，不需要合約才有的槓桿/爆倉概念。
+#
+# 監控名單是「動態輪動」而不是死守固定幾檔：從一份人工篩選過、確認 BingX 現貨
+# 真的有掛牌的迷因幣候選池裡，依 24h 成交量排名，取前 MEME_UNIVERSE_SIZE 大，
+# 定期重新排名——跟主流幣模塊的市場掃描名單同樣精神，因為真正在爆量拉盤的迷因幣
+# 常常不是那幾個「老牌」的，死守固定清單會漏掉大部分真正的機會。
+MEME_CANDIDATE_SYMBOLS = [
+    "PEPE/USDT", "WIF/USDT", "DOGE/USDT", "SHIB/USDT", "FLOKI/USDT", "BONK/USDT",
+    "BOME/USDT", "MEME/USDT", "TURBO/USDT", "WOJAK/USDT", "MYRO/USDT", "POPCAT/USDT",
+    "MOG/USDT", "BRETT/USDT", "NEIRO/USDT", "PNUT/USDT", "GOAT/USDT", "ACT/USDT",
+    "FARTCOIN/USDT", "CAT/USDT", "DOGS/USDT", "MEW/USDT", "SLERF/USDT",
+    "BABYDOGE/USDT", "AIDOGE/USDT", "LADYS/USDT", "ELON/USDT", "KISHU/USDT",
+    "SPONGE/USDT", "WEN/USDT", "PUPS/USDT", "PONKE/USDT", "CHILLGUY/USDT",
+    "SUNDOG/USDT",
+]  # 候選池：人工確認過都是 BingX 現貨實際掛牌的迷因幣（見開發時的驗證紀錄）
+MEME_UNIVERSE_SIZE = 10               # 動態輪動監控前N大（依候選池內24h成交量排名）
+MEME_UNIVERSE_REFRESH_SECONDS = 1800  # 多久重新排名一次（30分鐘；迷因幣類別排名變化
+                                       # 沒有全市場掃描那麼快，但爆發性強，不用比照45分鐘）
 MEME_TIMEFRAME = "1h"
 MEME_CANDLE_LIMIT = 50          # 24小時均量 + 緩衝，50根1小時K棒足夠
 MEME_VOLUME_LOOKBACK = 24       # 過去24根（=24小時）K棒的平均成交量當基準
@@ -404,6 +424,8 @@ class MemeAlertResponse(BaseModel):
     symbol: str
     volume_multiple: float   # 當根成交量是過去24小時均量的幾倍
     price: float
+    change_1h_pct: Optional[float] = None   # 判斷爆量當下是拉盤還是砸盤
+    change_24h_pct: Optional[float] = None
     triggered_at: str
 
 
@@ -413,12 +435,14 @@ class MemeWatchItem(BaseModel):
     symbol: str
     price: Optional[float] = None
     volume_multiple: Optional[float] = None
+    change_1h_pct: Optional[float] = None
+    change_24h_pct: Optional[float] = None
     updated_at: Optional[str] = None
 
 
 class MemeRadarResponse(BaseModel):
     alerts: List[MemeAlertResponse]  # 依觸發時間新到舊排序
-    watchlist: List[MemeWatchItem]   # 固定回傳 MEME_SYMBOLS 全部，不管有沒有警報
+    watchlist: List[MemeWatchItem]   # 動態迷因幣監控名單（見 state.meme_universe），不管有沒有警報都回傳
     updated_at: Optional[str] = None
 
 
@@ -543,6 +567,8 @@ class MemeAlertState:
     def __init__(self) -> None:
         self.current_price: Optional[float] = None
         self.volume_multiple: Optional[float] = None
+        self.change_1h_pct: Optional[float] = None   # 判斷爆量當下是拉盤還是砸盤
+        self.change_24h_pct: Optional[float] = None
         self.alert_active: bool = False  # 目前是否處於「爆量中」，避免同一次爆量重複記錄警報
         self.last_updated: Optional[str] = None
 
@@ -580,6 +606,8 @@ class AppState:
         self.meme_states: Dict[str, MemeAlertState] = {}
         self.meme_alerts: Deque[dict] = deque(maxlen=MEME_ALERT_HISTORY_MAX_LEN)
         self.last_meme_scan_at: float = 0.0  # time.monotonic() 時間戳
+        self.meme_universe: List[str] = []   # 動態排名後、目前正在監控的迷因幣清單
+        self.last_meme_universe_refresh: float = 0.0  # time.monotonic() 時間戳
 
         # 美股 ORB 當沖（獨立狀態，跟上面兩組完全分開；市場濾網是全域共用一份，
         # 不是逐檔各自算，因為所有標的都拿同一個大盤指數當濾網）
@@ -958,8 +986,10 @@ def evaluate_smart_money_bias(
 def compute_volume_snapshot(df: pd.DataFrame) -> Optional[dict]:
     """
     計算最新已收盤K棒的成交量，是過去 MEME_VOLUME_LOOKBACK 根（不含當根）
-    平均成交量的幾倍。不論有沒有達到爆量門檻都會回傳，這樣前端才能顯示
-    「現在幾倍、離門檻還差多少」，而不是只有爆量當下才有數字。
+    平均成交量的幾倍，同時算出 1h / 24h 漲跌幅——同樣是爆量，拉盤跟砸盤的意義
+    完全相反，只看量能倍數看不出來，一定要搭配價格方向才看得懂。不論有沒有
+    達到爆量門檻都會回傳，這樣前端才能顯示「現在幾倍、離門檻還差多少」，而不是
+    只有爆量當下才有數字。
     """
     if len(df) < MEME_VOLUME_LOOKBACK + 2:
         return None  # 資料不足
@@ -972,16 +1002,68 @@ def compute_volume_snapshot(df: pd.DataFrame) -> Optional[dict]:
         return None
 
     volume_multiple = last["volume"] / avg_volume_24h
-    return {"volume_multiple": float(volume_multiple), "price": float(last["close"])}
+
+    prev_close = df["close"].iloc[-2]
+    change_1h_pct = (last["close"] - prev_close) / prev_close * 100 if prev_close > 0 else None
+
+    change_24h_pct = None
+    if len(df) >= MEME_VOLUME_LOOKBACK + 1:
+        close_24h_ago = df["close"].iloc[-(MEME_VOLUME_LOOKBACK + 1)]
+        if close_24h_ago > 0:
+            change_24h_pct = (last["close"] - close_24h_ago) / close_24h_ago * 100
+
+    return {
+        "volume_multiple": float(volume_multiple),
+        "price": float(last["close"]),
+        "change_1h_pct": float(change_1h_pct) if change_1h_pct is not None else None,
+        "change_24h_pct": float(change_24h_pct) if change_24h_pct is not None else None,
+    }
+
+
+async def refresh_meme_universe(exchange_pool: dict) -> None:
+    """
+    每 MEME_UNIVERSE_REFRESH_SECONDS 秒，從 MEME_CANDIDATE_SYMBOLS 候選池裡依
+    24h 現貨成交量重新排名一次，取前 MEME_UNIVERSE_SIZE 大當作目前監控名單。
+    跟主流幣模塊的 refresh_scan_universe 同樣精神：死守固定幾檔會漏掉大部分
+    真正在爆量的迷因幣，動態排名才追得到「現在真的熱門」的標的。
+    """
+    now = time.monotonic()
+    if state.meme_universe and now - state.last_meme_universe_refresh < MEME_UNIVERSE_REFRESH_SECONDS:
+        return
+
+    last_error: Optional[Exception] = None
+    for name in _exchange_order():
+        exchange = exchange_pool[name]
+        if not exchange.markets:
+            continue
+        available = [s for s in MEME_CANDIDATE_SYMBOLS if s in exchange.markets]
+        if not available:
+            continue
+        try:
+            tickers = await exchange.fetch_tickers(available)
+            ranked = sorted(tickers.values(), key=lambda t: t.get("quoteVolume") or 0, reverse=True)
+            top_symbols = [t["symbol"] for t in ranked][:MEME_UNIVERSE_SIZE]
+
+            async with state.lock:
+                state.meme_universe = top_symbols
+                state.last_meme_universe_refresh = now
+            logger.info("迷因幣監控名單已更新（依24h現貨成交量排序，來源 %s）：%s", name, top_symbols)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            continue
+
+    logger.warning("更新迷因幣監控名單失敗：%s", last_error)
 
 
 async def scan_meme_radar(exchange_pool: dict) -> None:
     """
-    對每個迷因幣抓取 1 小時 K 線，檢查成交量是否爆量。用「邊緣觸發」邏輯：
-    只有從「未警報」變成「警報中」的那一刻才會記錄一筆新警報，避免同一次
-    爆量在還沒消退前，每次掃描都重複記錄。
+    對目前動態排名出來的迷因幣監控名單逐一抓 1 小時 K 線，檢查成交量是否爆量，
+    同時算出 1h/24h 漲跌幅——同樣爆量，拉盤跟砸盤方向完全相反，只看量能倍數會
+    誤判。用「邊緣觸發」邏輯：只有從「未警報」變成「警報中」的那一刻才會記錄
+    一筆新警報，避免同一次爆量在還沒消退前，每次掃描都重複記錄。
     """
-    for symbol in MEME_SYMBOLS:
+    for symbol in state.meme_universe:
         try:
             closed_df = await fetch_ohlcv_for_symbol(
                 exchange_pool, symbol, timeframe=MEME_TIMEFRAME, limit=MEME_CANDLE_LIMIT
@@ -999,6 +1081,8 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
             if snapshot is not None:
                 meme_state.current_price = snapshot["price"]
                 meme_state.volume_multiple = snapshot["volume_multiple"]
+                meme_state.change_1h_pct = snapshot["change_1h_pct"]
+                meme_state.change_24h_pct = snapshot["change_24h_pct"]
             meme_state.last_updated = datetime.now(timezone.utc).isoformat()
 
             if is_spike:
@@ -1009,15 +1093,18 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
                         "symbol": symbol,
                         "volume_multiple": snapshot["volume_multiple"],
                         "price": snapshot["price"],
+                        "change_1h_pct": snapshot["change_1h_pct"],
+                        "change_24h_pct": snapshot["change_24h_pct"],
                         "triggered_at": triggered_at,
                     }
                     state.meme_alerts.appendleft(alert_record)
                     append_jsonl(MEME_ALERT_LOG_PATH, alert_record)
                     logger.warning(
-                        "🚨 迷因幣爆量警報：%s 成交量達24h均量 %.1f 倍 @ %.8f",
+                        "🚨 迷因幣爆量警報：%s 成交量達24h均量 %.1f 倍 @ %.8f（1h %+.1f%%）",
                         symbol,
                         snapshot["volume_multiple"],
                         snapshot["price"],
+                        snapshot["change_1h_pct"] or 0.0,
                     )
                     new_alert = alert_record
             else:
@@ -1025,9 +1112,12 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
 
         # 推播放在鎖外面，理由同 run_tick
         if new_alert is not None:
+            direction_emoji = "🟢" if (new_alert["change_1h_pct"] or 0) >= 0 else "🔴"
             await send_telegram_message(
-                f"🚨 <b>迷因幣爆量</b>\n{new_alert['symbol']}\n"
+                f"🚨 <b>迷因幣爆量</b> {direction_emoji}\n{new_alert['symbol']}\n"
                 f"成交量達24h均量 {new_alert['volume_multiple']:.1f} 倍\n"
+                f"1h漲跌：{(new_alert['change_1h_pct'] or 0):+.1f}% ／ "
+                f"24h漲跌：{(new_alert['change_24h_pct'] or 0):+.1f}%\n"
                 f"價格：{new_alert['price']:.8f}"
             )
 
@@ -2017,6 +2107,7 @@ async def run_tick(exchange_pool: dict) -> None:
         state.last_deep_scan_at = now_monotonic
 
     # 迷因幣雷達：完全獨立的一支，跟上面主流幣策略的資料/邏輯互不影響
+    await refresh_meme_universe(exchange_pool)
     if now_monotonic - state.last_meme_scan_at >= MEME_SCAN_INTERVAL_SECONDS:
         await scan_meme_radar(exchange_pool)
         state.last_meme_scan_at = now_monotonic
@@ -2065,11 +2156,14 @@ def save_state_snapshot() -> None:
                 symbol: {
                     "current_price": meme_state.current_price,
                     "volume_multiple": meme_state.volume_multiple,
+                    "change_1h_pct": meme_state.change_1h_pct,
+                    "change_24h_pct": meme_state.change_24h_pct,
                     "alert_active": meme_state.alert_active,
                 }
                 for symbol, meme_state in state.meme_states.items()
             },
             "meme_alerts": list(state.meme_alerts),
+            "meme_universe": state.meme_universe,
             "us_stock_states": {
                 symbol: {
                     "open_signal": s.open_signal,
@@ -2114,9 +2208,12 @@ def load_state_snapshot() -> None:
             meme_state = state.get_meme_state(symbol)
             meme_state.current_price = data.get("current_price")
             meme_state.volume_multiple = data.get("volume_multiple")
+            meme_state.change_1h_pct = data.get("change_1h_pct")
+            meme_state.change_24h_pct = data.get("change_24h_pct")
             meme_state.alert_active = data.get("alert_active", False)
 
         state.meme_alerts.extend(snapshot.get("meme_alerts", []))
+        state.meme_universe = snapshot.get("meme_universe", [])
 
         for symbol, data in snapshot.get("us_stock_states", {}).items():
             us_state = state.get_us_stock_state(symbol)
@@ -2358,8 +2455,8 @@ async def get_smart_money(symbol: str = MAJOR_SYMBOLS[0]) -> SmartMoneyResponse:
 async def get_memes() -> MemeRadarResponse:
     """
     回傳最新觸發爆量警報的迷因幣清單（依觸發時間新到舊），與主流幣訊號完全獨立。
-    watchlist 固定回傳 MEME_SYMBOLS 全部，不管有沒有警報，讓前端在「沒爆量」時
-    也能顯示目前量能倍數，而不是整頁空白。
+    watchlist 回傳目前動態排名出來的監控名單（見 state.meme_universe），不管有
+    沒有警報，讓前端在「沒爆量」時也能顯示目前量能倍數跟漲跌幅，而不是整頁空白。
     """
     async with state.lock:
         alerts = [
@@ -2367,18 +2464,22 @@ async def get_memes() -> MemeRadarResponse:
                 symbol=record["symbol"],
                 volume_multiple=record["volume_multiple"],
                 price=record["price"],
+                change_1h_pct=record.get("change_1h_pct"),
+                change_24h_pct=record.get("change_24h_pct"),
                 triggered_at=record["triggered_at"],
             )
             for record in state.meme_alerts
         ]
         watchlist = []
-        for symbol in MEME_SYMBOLS:
+        for symbol in state.meme_universe:
             meme_state = state.meme_states.get(symbol)
             watchlist.append(
                 MemeWatchItem(
                     symbol=symbol,
                     price=meme_state.current_price if meme_state else None,
                     volume_multiple=meme_state.volume_multiple if meme_state else None,
+                    change_1h_pct=meme_state.change_1h_pct if meme_state else None,
+                    change_24h_pct=meme_state.change_24h_pct if meme_state else None,
                     updated_at=meme_state.last_updated if meme_state else None,
                 )
             )
@@ -2553,7 +2654,7 @@ async def health_check() -> dict:
         "active_exchange": state.active_exchange_name,
         "major_symbols": MAJOR_SYMBOLS,
         "scan_universe_size": len(state.scan_universe),
-        "meme_symbols": MEME_SYMBOLS,
+        "meme_universe": state.meme_universe,
         "meme_alert_count": len(state.meme_alerts),
         "last_tick_at": state.last_tick_at,
         "server_time": datetime.now(timezone.utc).isoformat(),

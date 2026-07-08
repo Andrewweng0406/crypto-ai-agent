@@ -96,16 +96,20 @@ export interface BackendMemeAlert {
   symbol: string
   volume_multiple: number
   price: number
+  change_1h_pct: number | null
+  change_24h_pct: number | null
   triggered_at: string
 }
 
-// Always present for all MEME_SYMBOLS regardless of alert state — this is
-// what lets the tab show "PEPE is at 1.4x, needs 3x" instead of going blank
-// the moment nothing is currently spiking.
+// Always present for the current dynamically-ranked watchlist regardless of
+// alert state — this is what lets the tab show "PEPE is at 1.4x, needs 3x"
+// instead of going blank the moment nothing is currently spiking.
 export interface BackendMemeWatchItem {
   symbol: string
   price: number | null
   volume_multiple: number | null
+  change_1h_pct: number | null
+  change_24h_pct: number | null
   updated_at: string | null
 }
 
@@ -119,6 +123,8 @@ export interface MemeAlert {
   symbol: string
   volumeMultiple: number
   price: number
+  change1hPct: number | null
+  change24hPct: number | null
   triggeredAt: string
 }
 
@@ -126,6 +132,8 @@ export interface MemeWatchItem {
   symbol: string
   price: number | null
   volumeMultiple: number | null
+  change1hPct: number | null
+  change24hPct: number | null
   updatedAt: string | null
 }
 
@@ -134,6 +142,8 @@ export function adaptMemeAlerts(raw: BackendMemeRadarResponse): MemeAlert[] {
     symbol: a.symbol,
     volumeMultiple: a.volume_multiple,
     price: a.price,
+    change1hPct: a.change_1h_pct,
+    change24hPct: a.change_24h_pct,
     triggeredAt: a.triggered_at,
   }))
 }
@@ -143,6 +153,8 @@ export function adaptMemeWatchlist(raw: BackendMemeRadarResponse): MemeWatchItem
     symbol: w.symbol,
     price: w.price,
     volumeMultiple: w.volume_multiple,
+    change1hPct: w.change_1h_pct,
+    change24hPct: w.change_24h_pct,
     updatedAt: w.updated_at,
   }))
 }

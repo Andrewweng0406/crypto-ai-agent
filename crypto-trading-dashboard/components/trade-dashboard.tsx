@@ -227,8 +227,8 @@ export function TradeDashboard() {
         <>
           <MemeRadar alerts={memeAlerts} watchlist={memeWatchlist} isLoading={memesLoading} error={undefined} />
           <p className="text-center text-xs text-muted-foreground">
-            迷因幣雷達為獨立功能：純粹偵測 PEPE / WIF / DOGE 現貨的成交量異常放大，不是交易訊號，沒有方向、槓桿或
-            TP/SL。
+            迷因幣雷達為獨立功能：從迷因幣候選池依 24h 成交量動態排名監控前 10 大，純粹偵測現貨的成交量異常放大
+            （同時標示是拉盤還是砸盤），不是交易訊號，沒有方向、槓桿或 TP/SL。
           </p>
         </>
       ) : isUSStockMode ? (

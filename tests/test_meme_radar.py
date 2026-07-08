@@ -2,15 +2,17 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from main import MEME_VOLUME_LOOKBACK, compute_volume_snapshot
 
 
 def _make_df(volumes, close_price=1.0):
     n = len(volumes)
+    closes = close_price if isinstance(close_price, (list, np.ndarray)) else np.full(n, close_price)
     return pd.DataFrame({
         "timestamp": np.arange(n),
-        "open": close_price, "high": close_price, "low": close_price, "close": close_price,
+        "open": closes, "high": closes, "low": closes, "close": closes,
         "volume": volumes,
     })
 
@@ -42,3 +44,30 @@ def test_zero_baseline_volume_returns_none():
     volumes = [0.0] * MEME_VOLUME_LOOKBACK + [100.0]
     df = _make_df(volumes)
     assert compute_volume_snapshot(df) is None
+
+
+def test_change_1h_pct_detects_pump_direction():
+    n = MEME_VOLUME_LOOKBACK + 2
+    volumes = [100.0] * n
+    closes = [1.0] * (n - 1) + [1.5]  # 最後一根從1.0拉到1.5，同樣爆量，方向是拉盤
+    df = _make_df(volumes, close_price=closes)
+    snapshot = compute_volume_snapshot(df)
+    assert snapshot["change_1h_pct"] == pytest.approx(50.0)
+
+
+def test_change_1h_pct_detects_dump_direction():
+    n = MEME_VOLUME_LOOKBACK + 2
+    volumes = [100.0] * n
+    closes = [1.0] * (n - 1) + [0.5]  # 最後一根從1.0砸到0.5，方向是砸盤
+    df = _make_df(volumes, close_price=closes)
+    snapshot = compute_volume_snapshot(df)
+    assert snapshot["change_1h_pct"] == pytest.approx(-50.0)
+
+
+def test_change_24h_pct_compares_against_24_bars_ago():
+    n = MEME_VOLUME_LOOKBACK + 2  # 26 根：index -(MEME_VOLUME_LOOKBACK+1) = index 1 才是「24根前」
+    volumes = [100.0] * n
+    closes = [1.0, 2.0] + [1.0] * (n - 2)  # index1(24h前)是2.0，最後一根是1.0 -> -50%
+    df = _make_df(volumes, close_price=closes)
+    snapshot = compute_volume_snapshot(df)
+    assert snapshot["change_24h_pct"] == pytest.approx(-50.0)
