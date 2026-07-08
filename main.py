@@ -193,7 +193,8 @@ NEWS_RSS_FEEDS: Dict[str, str] = {
     "CNBC Markets": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
 }
 NEWS_SCAN_INTERVAL_SECONDS = 600   # 10分鐘一次；LLM呼叫有實際費用，不需要抓太頻繁
-NEWS_MAX_ITEMS_PER_CYCLE = 8       # 每輪最多送幾則新標題給LLM分析，控制成本上限
+NEWS_MAX_ITEMS_PER_SOURCE = 4      # 每個來源每輪最多送幾則新標題給LLM分析，避免單一來源（例如發文特別密集的
+                                    # Yahoo Finance）洗版排擠掉其他來源，確保每輪都是四個來源雨露均霑
 NEWS_SEEN_URL_MAX_LEN = 500        # 記住最近幾則新聞網址，避免重複分析、重複通知
 NEWS_HISTORY_MAX_LEN = 60          # /api/ai-agent/news 保留的筆數
 NEWS_RESONANCE_SCORE_THRESHOLD = 7 # 情緒分數 |score| >= 這個值，才算「強烈共振」
@@ -1513,17 +1514,29 @@ def _match_open_signals_for_symbol(ticker: str) -> List[dict]:
 
 async def scan_news_agent(openai_client: Optional[AsyncOpenAI]) -> None:
     """
-    抓新聞 -> 去重複 -> LLM結構化情緒分析 -> 跟現有開倉部位比對是否「技術面+情緒面
-    共振」（部位方向與情緒方向一致，且 |分數| 達到 NEWS_RESONANCE_SCORE_THRESHOLD）
-    -> 共振時推播 Telegram。每輪最多分析 NEWS_MAX_ITEMS_PER_CYCLE 則，控制LLM成本上限。
+    抓新聞 -> 去重複 -> LLM結構化情緒分析 -> 只留「有價值」的（明確標的 + 非中性
+    情緒分數）-> 跟現有開倉部位比對是否「技術面+情緒面共振」（部位方向與情緒方向
+    一致，且 |分數| 達到 NEWS_RESONANCE_SCORE_THRESHOLD）-> 共振時推播 Telegram。
+
+    候選新聞用「每個來源各自留名額」（NEWS_MAX_ITEMS_PER_SOURCE）而不是全部來源
+    混在一起比誰最新，避免發文密度高的來源（例如 Yahoo Finance）每輪把配額全部
+    吃光，擠壓掉其他來源，確保每輪都有機會分析到不同來源的新聞。
     """
     entries = await fetch_news_entries()
 
     async with state.lock:
         seen = set(state.seen_news_urls)
-    new_entries = [e for e in entries if e["url"] not in seen]
-    new_entries.sort(key=lambda e: e["published_at"], reverse=True)  # 優先分析最新的
-    new_entries = new_entries[:NEWS_MAX_ITEMS_PER_CYCLE]
+
+    entries_by_source: Dict[str, List[dict]] = {}
+    for e in entries:
+        if e["url"] in seen:
+            continue
+        entries_by_source.setdefault(e["source"], []).append(e)
+
+    new_entries: List[dict] = []
+    for source_entries in entries_by_source.values():
+        source_entries.sort(key=lambda e: e["published_at"], reverse=True)  # 該來源內優先分析最新的
+        new_entries.extend(source_entries[:NEWS_MAX_ITEMS_PER_SOURCE])
 
     if not new_entries:
         return
@@ -1536,6 +1549,12 @@ async def scan_news_agent(openai_client: Optional[AsyncOpenAI]) -> None:
             state.seen_news_urls.append(entry["url"])
 
         if analysis is None:
+            continue
+
+        # 「有價值」的定義：LLM 判斷出至少一個明確標的，而且情緒不是中性(0分)——
+        # 沒有標的或中性的新聞對交易判斷沒有實質幫助，不存、不顯示，但上面那行
+        # 已經把網址記進 seen_news_urls，不會浪費 LLM 額度重複分析同一則。
+        if not analysis["symbols"] or analysis["sentiment_score"] == 0:
             continue
 
         record = {
