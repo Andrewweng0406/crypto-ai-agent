@@ -3,6 +3,9 @@
 from main import (
     ATTENTION_OVERHEAT_RANK_CUTOFF,
     ATTENTION_OVERHEAT_STREAK_THRESHOLD,
+    MEME_VOLUME_SPIKE_MULT,
+    MemeAlertState,
+    _compute_meme_resonance_status,
     build_resonance_summary_prompt,
 )
 
@@ -54,3 +57,47 @@ def test_rank_cutoff_is_used_for_streak_accumulation():
     # 排名剛好等於 cutoff 不算「前N名」（cutoff=3 代表名次 0,1,2 才算，也就是<cutoff）
     assert (ATTENTION_OVERHEAT_RANK_CUTOFF - 1) < ATTENTION_OVERHEAT_RANK_CUTOFF
     assert not (ATTENTION_OVERHEAT_RANK_CUTOFF < ATTENTION_OVERHEAT_RANK_CUTOFF)
+
+
+def _make_state(volume_multiple=None, change_1h_pct=0.0, is_trending=False, streak=0):
+    s = MemeAlertState()
+    s.volume_multiple = volume_multiple
+    s.change_1h_pct = change_1h_pct
+    s.is_trending = is_trending
+    s.trending_top_streak = streak
+    return s
+
+
+def test_resonance_status_none_state_is_insufficient():
+    assert _compute_meme_resonance_status(None) == "insufficient"
+
+
+def test_resonance_status_confirmed_when_spike_pump_and_trending():
+    s = _make_state(volume_multiple=MEME_VOLUME_SPIKE_MULT, change_1h_pct=10.0, is_trending=True, streak=1)
+    assert _compute_meme_resonance_status(s) == "confirmed"
+
+
+def test_resonance_status_insufficient_when_not_trending():
+    s = _make_state(volume_multiple=MEME_VOLUME_SPIKE_MULT, change_1h_pct=10.0, is_trending=False, streak=0)
+    assert _compute_meme_resonance_status(s) == "insufficient"
+
+
+def test_resonance_status_insufficient_when_volume_below_threshold():
+    s = _make_state(volume_multiple=MEME_VOLUME_SPIKE_MULT - 0.5, change_1h_pct=10.0, is_trending=True, streak=0)
+    assert _compute_meme_resonance_status(s) == "insufficient"
+
+
+def test_resonance_status_insufficient_when_dumping():
+    s = _make_state(volume_multiple=MEME_VOLUME_SPIKE_MULT, change_1h_pct=-10.0, is_trending=True, streak=0)
+    assert _compute_meme_resonance_status(s) == "insufficient"
+
+
+def test_resonance_status_overheated_beats_confirmed():
+    # 即使量能、拉盤、上榜條件都滿足，只要連續過熱就要攔截，不能顯示 confirmed
+    s = _make_state(
+        volume_multiple=MEME_VOLUME_SPIKE_MULT,
+        change_1h_pct=10.0,
+        is_trending=True,
+        streak=ATTENTION_OVERHEAT_STREAK_THRESHOLD,
+    )
+    assert _compute_meme_resonance_status(s) == "overheated"

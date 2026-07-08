@@ -104,12 +104,20 @@ export interface BackendMemeAlert {
 // Always present for the current dynamically-ranked watchlist regardless of
 // alert state — this is what lets the tab show "PEPE is at 1.4x, needs 3x"
 // instead of going blank the moment nothing is currently spiking.
+export type MemeResonanceStatus = "confirmed" | "overheated" | "insufficient"
+
 export interface BackendMemeWatchItem {
   symbol: string
   price: number | null
   volume_multiple: number | null
   change_1h_pct: number | null
   change_24h_pct: number | null
+  is_trending: boolean
+  trending_rank: number | null
+  trending_top_streak: number
+  resonance_status: MemeResonanceStatus
+  last_resonance_summary: string | null
+  last_resonance_at: string | null
   updated_at: string | null
 }
 
@@ -134,6 +142,12 @@ export interface MemeWatchItem {
   volumeMultiple: number | null
   change1hPct: number | null
   change24hPct: number | null
+  isTrending: boolean
+  trendingRank: number | null
+  trendingTopStreak: number
+  resonanceStatus: MemeResonanceStatus
+  lastResonanceSummary: string | null
+  lastResonanceAt: string | null
   updatedAt: string | null
 }
 
@@ -155,6 +169,12 @@ export function adaptMemeWatchlist(raw: BackendMemeRadarResponse): MemeWatchItem
     volumeMultiple: w.volume_multiple,
     change1hPct: w.change_1h_pct,
     change24hPct: w.change_24h_pct,
+    isTrending: w.is_trending,
+    trendingRank: w.trending_rank,
+    trendingTopStreak: w.trending_top_streak,
+    resonanceStatus: w.resonance_status,
+    lastResonanceSummary: w.last_resonance_summary,
+    lastResonanceAt: w.last_resonance_at,
     updatedAt: w.updated_at,
   }))
 }

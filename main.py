@@ -454,6 +454,13 @@ class MemeWatchItem(BaseModel):
     change_24h_pct: Optional[float] = None
     is_trending: bool = False              # 是否上 CoinGecko 熱門榜（市場注意力訊號）
     trending_rank: Optional[int] = None    # 熱門榜排名（0=最熱門），不在榜上則為 None
+    trending_top_streak: int = 0           # 連續幾輪落在熱門榜前N名（防追高進度）
+    # "confirmed"：爆量+拉盤+上榜，達到共振門檻／"overheated"：連續過熱、已攔截／
+    # "insufficient"：其他情況（量能不夠、沒上榜、或正在砸盤）。刻意不用「黃金買點」
+    # 這種話術，這只是一個未經回測驗證的組合式判斷，不是有把握的交易訊號。
+    resonance_status: Literal["confirmed", "overheated", "insufficient"] = "insufficient"
+    last_resonance_summary: Optional[str] = None  # 最近一次達到共振門檻時，LLM生成的摘要文案
+    last_resonance_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
@@ -590,6 +597,8 @@ class MemeAlertState:
         self.is_trending: bool = False           # 目前是否在 CoinGecko 熱門榜上（市場注意力訊號）
         self.trending_rank: Optional[int] = None # 熱門榜排名（0=最熱門），不在榜上則為 None
         self.trending_top_streak: int = 0        # 連續幾次落在 ATTENTION_OVERHEAT_RANK_CUTOFF 內，防追高濾網用
+        self.last_resonance_summary: Optional[str] = None  # 最近一次共振確認時，LLM生成的摘要文案
+        self.last_resonance_at: Optional[str] = None
         self.last_updated: Optional[str] = None
 
 
@@ -1137,6 +1146,22 @@ async def generate_resonance_summary(openai_client: Optional[AsyncOpenAI], alert
         return None
 
 
+def _compute_meme_resonance_status(meme_state: Optional["MemeAlertState"]) -> Literal["confirmed", "overheated", "insufficient"]:
+    """
+    給前端顯示用的即時共振狀態，跟 scan_meme_radar 判斷要不要推播 Telegram 是
+    同一套門檻，但這裡是「查詢當下即時算」，不是只有邊緣觸發那一刻才更新。
+    """
+    if meme_state is None:
+        return "insufficient"
+    if meme_state.trending_top_streak >= ATTENTION_OVERHEAT_STREAK_THRESHOLD:
+        return "overheated"
+    is_spike = meme_state.volume_multiple is not None and meme_state.volume_multiple >= MEME_VOLUME_SPIKE_MULT
+    is_pump = (meme_state.change_1h_pct or 0) >= 0
+    if is_spike and is_pump and meme_state.is_trending:
+        return "confirmed"
+    return "insufficient"
+
+
 async def refresh_meme_universe(exchange_pool: dict) -> None:
     """
     每 MEME_UNIVERSE_REFRESH_SECONDS 秒，從 MEME_CANDIDATE_SYMBOLS 候選池裡依
@@ -1268,6 +1293,12 @@ async def scan_meme_radar(exchange_pool: dict) -> None:
         else:
             trending_rank = attention_snapshot["trending_rank"]
             summary = await generate_resonance_summary(openai_client, new_alert, trending_rank)
+            if summary:
+                async with state.lock:
+                    ms = state.get_meme_state(symbol)
+                    ms.last_resonance_summary = summary
+                    ms.last_resonance_at = datetime.now(timezone.utc).isoformat()
+
             message = (
                 f"🎯 <b>迷因幣多空共振</b> 🟢\n{new_alert['symbol']}\n"
                 f"成交量達24h均量 {new_alert['volume_multiple']:.1f} 倍\n"
@@ -2322,6 +2353,8 @@ def save_state_snapshot() -> None:
                     "is_trending": meme_state.is_trending,
                     "trending_rank": meme_state.trending_rank,
                     "trending_top_streak": meme_state.trending_top_streak,
+                    "last_resonance_summary": meme_state.last_resonance_summary,
+                    "last_resonance_at": meme_state.last_resonance_at,
                 }
                 for symbol, meme_state in state.meme_states.items()
             },
@@ -2377,6 +2410,8 @@ def load_state_snapshot() -> None:
             meme_state.is_trending = data.get("is_trending", False)
             meme_state.trending_rank = data.get("trending_rank")
             meme_state.trending_top_streak = data.get("trending_top_streak", 0)
+            meme_state.last_resonance_summary = data.get("last_resonance_summary")
+            meme_state.last_resonance_at = data.get("last_resonance_at")
 
         state.meme_alerts.extend(snapshot.get("meme_alerts", []))
         state.meme_universe = snapshot.get("meme_universe", [])
@@ -2648,6 +2683,10 @@ async def get_memes() -> MemeRadarResponse:
                     change_24h_pct=meme_state.change_24h_pct if meme_state else None,
                     is_trending=meme_state.is_trending if meme_state else False,
                     trending_rank=meme_state.trending_rank if meme_state else None,
+                    trending_top_streak=meme_state.trending_top_streak if meme_state else 0,
+                    resonance_status=_compute_meme_resonance_status(meme_state),
+                    last_resonance_summary=meme_state.last_resonance_summary if meme_state else None,
+                    last_resonance_at=meme_state.last_resonance_at if meme_state else None,
                     updated_at=meme_state.last_updated if meme_state else None,
                 )
             )

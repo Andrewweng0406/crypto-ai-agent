@@ -1,6 +1,10 @@
+"use client"
+
+import { useEffect, useState } from "react"
 import { Flame, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type MemeAlert, type MemeWatchItem, formatPrice, formatTime } from "@/lib/signals"
+import { MemeResonanceBoard } from "@/components/meme-resonance-board"
 
 const SPIKE_THRESHOLD = 3.0
 
@@ -35,6 +39,21 @@ interface MemeRadarProps {
 // monitoring panel), so the tab reads as "actively computing" even when
 // nothing has actually spiked; the list below is only real trigger events.
 export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProps) {
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+
+  // 跟其他分頁同樣的選取邏輯：預設選第一個，選到的標的從清單消失時（例如輪出了
+  // 動態監控名單）就重新挑一個，避免看板停留在一個已經不存在的幣上。
+  useEffect(() => {
+    if (watchlist.length === 0) {
+      setSelectedSymbol(null)
+      return
+    }
+    const stillPresent = watchlist.some((w) => w.symbol === selectedSymbol)
+    if (!stillPresent) {
+      setSelectedSymbol(watchlist[0].symbol)
+    }
+  }, [watchlist, selectedSymbol])
+
   if (error) {
     return (
       <div className="rounded-2xl border border-short/30 bg-short/[0.06] p-6 text-center text-sm text-short">
@@ -43,17 +62,26 @@ export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProp
     )
   }
 
+  const selected = watchlist.find((w) => w.symbol === selectedSymbol) ?? null
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-3">
         {watchlist.map((item) => {
           const isSpiking = item.volumeMultiple !== null && item.volumeMultiple >= SPIKE_THRESHOLD
+          const isSelected = item.symbol === selectedSymbol
           return (
-            <div
+            <button
               key={item.symbol}
+              type="button"
+              onClick={() => setSelectedSymbol(item.symbol)}
               className={cn(
-                "flex min-w-[180px] flex-1 flex-col gap-1.5 rounded-xl border px-4 py-3",
-                isSpiking ? "border-short/60 bg-short/[0.08]" : "border-border/60 bg-card",
+                "flex min-w-[180px] flex-1 flex-col gap-1.5 rounded-xl border px-4 py-3 text-left transition-colors",
+                isSelected
+                  ? "border-primary/60 bg-primary/[0.08]"
+                  : isSpiking
+                    ? "border-short/60 bg-short/[0.08] hover:bg-short/[0.12]"
+                    : "border-border/60 bg-card hover:bg-secondary/40",
               )}
             >
               <div className="flex items-center justify-between gap-2">
@@ -75,10 +103,12 @@ export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProp
                   24h <ChangeBadge pct={item.change24hPct} />
                 </span>
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
+
+      {selected && <MemeResonanceBoard item={selected} />}
 
       {alerts.length === 0 ? (
         <div className="flex min-h-[120px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
