@@ -8,6 +8,7 @@ import {
   adaptMemeAlerts,
   adaptMemeWatchlist,
   adaptSignalList,
+  adaptUSStockHistory,
   adaptUSStockList,
   fallbackHistory,
   formatPrice,
@@ -15,6 +16,7 @@ import {
   type BackendHistoryResponse,
   type BackendMemeRadarResponse,
   type BackendSignalListResponse,
+  type BackendUSStockHistoryResponse,
   type BackendUSStockListResponse,
   type Universe,
 } from "@/lib/signals"
@@ -29,6 +31,7 @@ import { MemeRadar } from "@/components/meme-radar"
 import { MonitoringPanel } from "@/components/monitoring-panel"
 import { USStockWatchlist } from "@/components/us-stock-watchlist"
 import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
+import { USStockHistory } from "@/components/us-stock-history"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -81,6 +84,13 @@ export function TradeDashboard() {
     refreshInterval: 3000,
   })
 
+  const {
+    data: rawUSStockHistory,
+    error: usStockHistoryError,
+  } = useSWR<BackendUSStockHistoryResponse>(isUSStockMode ? "/api/us-stock-orb/history" : null, fetcher, {
+    refreshInterval: 15000,
+  })
+
   const { data: rawHistory, error: historyError } = useSWR<BackendHistoryResponse>("/api/history", fetcher, {
     refreshInterval: 15000,
   })
@@ -91,6 +101,13 @@ export function TradeDashboard() {
   const usStockData = useMemo(
     () => (rawUSStocks ? adaptUSStockList(rawUSStocks) : { marketSession: "CLOSED" as const, marketRegime: "Neutral" as const, stocks: [] }),
     [rawUSStocks],
+  )
+  const usStockHistoryData = useMemo(
+    () =>
+      rawUSStockHistory
+        ? adaptUSStockHistory(rawUSStockHistory)
+        : { trades: [], stats: { totalTrades: 0, wins: 0, losses: 0, winRatePct: 0 } },
+    [rawUSStockHistory],
   )
   const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
 
@@ -256,6 +273,12 @@ export function TradeDashboard() {
               )}
             </div>
           </div>
+
+          <USStockHistory
+            trades={usStockHistoryData.trades}
+            stats={usStockHistoryData.stats}
+            error={usStockHistoryError?.message}
+          />
 
           <p className="text-center text-xs text-muted-foreground">
             美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，

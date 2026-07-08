@@ -415,6 +415,70 @@ export function adaptUSStockList(raw: BackendUSStockListResponse): {
   }
 }
 
+// 已結算的實盤成交紀錄——這是真實累積結果，不是回測，樣本數在累積起來之前
+// 沒有統計意義，元件那邊要標註清楚。
+export interface BackendUSStockHistoryItem {
+  symbol: string
+  display_name: string
+  side: Side
+  entry_price: number
+  exit_price: number
+  take_profit: number
+  stop_loss: number
+  leverage: number
+  result: "WIN" | "LOSS"
+  pnl_pct: number
+  opened_at: string
+  closed_at: string
+}
+
+export interface BackendUSStockHistoryResponse {
+  trades: BackendUSStockHistoryItem[]
+  stats: {
+    total_trades: number
+    wins: number
+    losses: number
+    win_rate_pct: number
+  }
+}
+
+export interface USStockHistoryItem {
+  id: string
+  symbol: string
+  displayName: string
+  side: Side
+  entryPrice: number
+  exitPrice: number
+  result: "WIN" | "LOSS"
+  pnlPct: number
+  closedAt: string
+}
+
+export function adaptUSStockHistory(raw: BackendUSStockHistoryResponse): {
+  trades: USStockHistoryItem[]
+  stats: HistoryStats
+} {
+  return {
+    trades: raw.trades.map((t, i) => ({
+      id: `${t.symbol}-${t.closed_at}-${i}`,
+      symbol: t.symbol,
+      displayName: t.display_name,
+      side: t.side,
+      entryPrice: t.entry_price,
+      exitPrice: t.exit_price,
+      result: t.result,
+      pnlPct: t.pnl_pct,
+      closedAt: t.closed_at,
+    })),
+    stats: {
+      totalTrades: raw.stats.total_trades,
+      wins: raw.stats.wins,
+      losses: raw.stats.losses,
+      winRatePct: raw.stats.win_rate_pct,
+    },
+  }
+}
+
 export function formatPrice(value: number): string {
   // Market-scan and meme-radar symbols can be sub-$1 (DOGE ~$0.075) or
   // sub-cent (PEPE ~$0.0000027) — a fixed 2-decimal format would round

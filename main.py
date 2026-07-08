@@ -402,6 +402,35 @@ class USStockListResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class USStockHistoryItem(BaseModel):
+    symbol: str
+    display_name: str
+    side: Literal["Long", "Short"]
+    entry_price: float
+    exit_price: float
+    take_profit: float
+    stop_loss: float
+    leverage: int
+    result: Literal["WIN", "LOSS"]
+    pnl_pct: float
+    opened_at: str
+    closed_at: str
+
+
+class USStockHistoryStats(BaseModel):
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate_pct: float
+
+
+class USStockHistoryResponse(BaseModel):
+    # ⚠️ 這是「實盤累積結果」，不是回測——樣本數在累積起來之前很小，數字沒有
+    # 統計意義，前端請務必標註清楚，不要讓人誤以為這是驗證過的勝率。
+    trades: List[USStockHistoryItem]
+    stats: USStockHistoryStats
+
+
 # ---------------------------------------------------------------------------
 # 3. 全域狀態（背景任務寫入，API 讀取）
 # ---------------------------------------------------------------------------
@@ -1992,6 +2021,50 @@ async def get_us_stock_orb() -> USStockListResponse:
         market_regime=regime,
         stocks=stocks,
         updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@app.get("/api/us-stock-orb/history", response_model=USStockHistoryResponse)
+async def get_us_stock_history() -> USStockHistoryResponse:
+    """
+    回傳美股 ORB 已結算的實盤成交紀錄與統計。這是「真實累積結果」，不是回測——
+    上線第一天樣本數會是 0 或個位數，統計上還不具意義，純粹讓實際表現隨時間
+    自然累積、可被檢視，取代任何無法驗證的「回測勝率」宣稱。
+    """
+    async with state.lock:
+        records = list(state.us_stock_history)
+
+    trades = [
+        USStockHistoryItem(
+            symbol=record["symbol"],
+            display_name=record["display_name"],
+            side=record["side"],
+            entry_price=record["entry_price"],
+            exit_price=record["exit_price"],
+            take_profit=record["take_profit"],
+            stop_loss=record["stop_loss"],
+            leverage=record["leverage"],
+            result=record["result"],
+            pnl_pct=record["pnl_pct"],
+            opened_at=record["opened_at"],
+            closed_at=record["closed_at"],
+        )
+        for record in records
+    ]
+
+    wins = sum(1 for t in trades if t.result == "WIN")
+    losses = sum(1 for t in trades if t.result == "LOSS")
+    total = wins + losses
+    win_rate = (wins / total * 100) if total > 0 else 0.0
+
+    return USStockHistoryResponse(
+        trades=trades,
+        stats=USStockHistoryStats(
+            total_trades=total,
+            wins=wins,
+            losses=losses,
+            win_rate_pct=round(win_rate, 2),
+        ),
     )
 
 
