@@ -1209,6 +1209,72 @@ async def evaluate_us_stock_open_signal(ticker_symbol: str, current_price: float
     )
 
 
+async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) -> Optional[str]:
+    """
+    當沖規則：收盤前如果部位還沒碰到 TP/SL，用收盤前最後報價強制平倉，不留倉過夜。
+    背景迴圈在非交易時段整個睡眠、完全不會監控價格，留倉會變成沒人管的曝險，
+    這支函式就是避免那種情況。呼叫端須持有 state.lock。
+    """
+    st = state.get_us_stock_state(ticker_symbol)
+    signal = st.open_signal
+    if signal is None:
+        return None
+
+    side = signal["side"]
+    exit_price = current_price
+
+    raw_pnl_pct = (exit_price - signal["entry_price"]) / signal["entry_price"] * 100
+    if side == "Short":
+        raw_pnl_pct = -raw_pnl_pct
+    pnl_pct = raw_pnl_pct * signal["leverage"]
+    result: Literal["WIN", "LOSS"] = "WIN" if pnl_pct >= 0 else "LOSS"
+
+    closed_record = {
+        **signal,
+        "exit_price": exit_price,
+        "result": result,
+        "pnl_pct": pnl_pct,
+        "closed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    state.us_stock_history.appendleft(closed_record)
+    st.open_signal = None
+    append_jsonl(US_STOCK_TRADE_LOG_PATH, closed_record)
+    logger.info("美股 ORB 收盤強制平倉：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
+
+    return (
+        f"🌙 <b>美股 ORB 收盤強制平倉</b>\n{signal['display_name']} {side}\n"
+        f"結果：{result}（當沖規則：收盤前未觸及TP/SL，以收盤前報價平倉）\n"
+        f"進場：{signal['entry_price']:.4f} → 出場：{exit_price:.4f}\n"
+        f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
+    )
+
+
+async def flatten_all_us_stock_positions(exchange_pool: dict) -> None:
+    """收盤瞬間對所有還有部位的標的做一次批次強制平倉，見 force_close_us_stock_signal。"""
+    async with state.lock:
+        open_symbols = [
+            sym for sym in US_STOCK_SYMBOLS.values() if state.get_us_stock_state(sym).open_signal is not None
+        ]
+    if not open_symbols:
+        return
+
+    try:
+        prices = await fetch_tickers_batch(exchange_pool, open_symbols)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("收盤強制平倉時抓取價格失敗，這些部位將留到下次抓得到報價才平倉：%s", exc)
+        return
+
+    notifications: List[str] = []
+    async with state.lock:
+        for ticker_symbol, price in prices.items():
+            notification = await force_close_us_stock_signal(ticker_symbol, price)
+            if notification:
+                notifications.append(notification)
+
+    for notification in notifications:
+        await send_telegram_message(notification)
+
+
 async def us_stock_orb_loop(exchange_pool: dict) -> None:
     """
     美股 ORB 背景迴圈：獨立於主流幣/迷因幣共用的 price_monitor_loop，只在美股交易
@@ -1216,17 +1282,32 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
     現價每 US_STOCK_TICKER_INTERVAL_SECONDS 秒刷新一次（驅動 TP/SL 監控），
     K線+ORB策略偵測每 US_STOCK_SCAN_INTERVAL_SECONDS 秒才跑一次（15m線沒必要
     每2秒重算），任何例外都會被記錄下來但不中斷這支迴圈。
+
+    當沖規則：休市時這支迴圈整個睡眠、完全不會監控價格，所以一旦偵測到「剛從
+    開盤轉成休市」，會先強制平倉所有還沒結算的部位（見 flatten_all_us_stock_
+    positions），不留倉過夜曝險。
     """
     last_scan_at = 0.0
     tz = ZoneInfo(US_MARKET_TZ)
+    # 初始值刻意設 True：如果伺服器是在休市時段重啟、又剛好從快照讀回一筆
+    # 沒平倉的舊部位（例如上次收盤前平倉失敗），第一輪就會觸發一次平倉檢查，
+    # 而不是要等到「真的觀察到一次開盤轉休市」才處理；沒有殘留部位時是無害的
+    # no-op（flatten_all_us_stock_positions 內部沒有部位就直接返回）。
+    was_active = True
 
     while True:
         try:
             now_et = datetime.now(tz)
-            if not _is_us_market_active(now_et):
+            is_active = _is_us_market_active(now_et)
+
+            if not is_active:
+                if was_active:
+                    await flatten_all_us_stock_positions(exchange_pool)
+                was_active = False
                 await asyncio.sleep(US_STOCK_CLOSED_POLL_SECONDS)
                 continue
 
+            was_active = True
             symbols = list(US_STOCK_SYMBOLS.values())
             try:
                 prices = await fetch_tickers_batch(exchange_pool, symbols)
