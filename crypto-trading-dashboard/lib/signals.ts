@@ -673,3 +673,118 @@ export function adaptSqueezeFeed(raw: BackendSqueezeFeedResponse): SqueezeFeedIt
     triggeredAt: item.triggered_at,
   }))
 }
+
+// ---------------------------------------------------------------------------
+// 📊 期權分析（Options Analytics，獨立、實驗性模塊）：Moomoo/Futu OpenD 期權鏈
+// -> Black-Scholes GEX 計算引擎，找出 Gamma 擠壓臨界點 + 期權大單即時流。
+// 需要真實 Moomoo/Futu 帳戶 + OpenD 連線，has_data=false 代表還沒連上/還沒
+// 拉到資料，不是「這檔沒有擠壓」，前端要能區分這兩種狀態。
+// ---------------------------------------------------------------------------
+
+export interface BackendOptionsGexPoint {
+  strike: number
+  call_gex: number
+  put_gex: number
+  net_gex: number
+}
+
+export interface BackendOptionsGexResponse {
+  symbol: string
+  has_data: boolean
+  spot_price: number | null
+  expiry: string | null
+  gamma_flip_strike: number | null
+  points: BackendOptionsGexPoint[]
+  whale_sweep_supported: boolean | null
+  updated_at: string | null
+}
+
+export interface BackendOptionsGexListResponse {
+  underlyings: BackendOptionsGexResponse[]
+  moomoo_connected: boolean
+  updated_at: string | null
+}
+
+export interface OptionsGexPoint {
+  strike: number
+  callGex: number
+  putGex: number
+  netGex: number
+}
+
+export interface OptionsGexData {
+  symbol: string
+  hasData: boolean
+  spotPrice: number | null
+  expiry: string | null
+  gammaFlipStrike: number | null
+  points: OptionsGexPoint[]
+  whaleSweepSupported: boolean | null
+  updatedAt: string | null
+}
+
+export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
+  underlyings: OptionsGexData[]
+  moomooConnected: boolean
+} {
+  return {
+    underlyings: raw.underlyings.map((u) => ({
+      symbol: u.symbol,
+      hasData: u.has_data,
+      spotPrice: u.spot_price,
+      expiry: u.expiry,
+      gammaFlipStrike: u.gamma_flip_strike,
+      points: u.points.map((p) => ({ strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex })),
+      whaleSweepSupported: u.whale_sweep_supported,
+      updatedAt: u.updated_at,
+    })),
+    moomooConnected: raw.moomoo_connected,
+  }
+}
+
+export interface BackendWhaleSweepItem {
+  symbol: string
+  strike: number
+  expiry: string
+  option_type: "call" | "put"
+  side: "buy" | "sell"
+  premium_usd: number
+  triggered_at: string
+}
+
+export interface BackendWhaleSweepResponse {
+  items: BackendWhaleSweepItem[]
+  updated_at: string | null
+}
+
+export interface WhaleSweepItem {
+  symbol: string
+  strike: number
+  expiry: string
+  optionType: "call" | "put"
+  side: "buy" | "sell"
+  premiumUsd: number
+  triggeredAt: string
+}
+
+export function adaptWhaleSweep(raw: BackendWhaleSweepResponse): WhaleSweepItem[] {
+  return raw.items.map((item) => ({
+    symbol: item.symbol,
+    strike: item.strike,
+    expiry: item.expiry,
+    optionType: item.option_type,
+    side: item.side,
+    premiumUsd: item.premium_usd,
+    triggeredAt: item.triggered_at,
+  }))
+}
+
+export function formatCompactUsd(value: number): string {
+  // 例："$1.24M" / "$850K"，給 GEX 數值/大單權利金這種大數字用，避免顯示一長串0
+  const sign = value < 0 ? "-" : ""
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`
+  return `${sign}$${abs.toFixed(0)}`
+}

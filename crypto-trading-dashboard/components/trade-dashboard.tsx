@@ -8,20 +8,24 @@ import {
   adaptMemeAlerts,
   adaptMemeWatchlist,
   adaptNewsAgent,
+  adaptOptionsGexList,
   adaptSignalList,
   adaptSqueezeFeed,
   adaptUSStockHistory,
   adaptUSStockList,
+  adaptWhaleSweep,
   fallbackHistory,
   formatPrice,
   formatTime,
   type BackendHistoryResponse,
   type BackendMemeRadarResponse,
   type BackendNewsAgentResponse,
+  type BackendOptionsGexListResponse,
   type BackendSignalListResponse,
   type BackendSqueezeFeedResponse,
   type BackendUSStockHistoryResponse,
   type BackendUSStockListResponse,
+  type BackendWhaleSweepResponse,
   type Universe,
 } from "@/lib/signals"
 import { HeroSignal } from "@/components/hero-signal"
@@ -38,6 +42,7 @@ import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
 import { USStockHistory } from "@/components/us-stock-history"
 import { NewsRadar } from "@/components/news-radar"
 import { SqueezeFeed } from "@/components/squeeze-feed"
+import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -46,9 +51,9 @@ const fetcher = (url: string) =>
     return body
   })
 
-// 迷因雷達、美股ORB、AI輿情雷達都是獨立模塊（跟主流幣不同的資料形狀），
-// tab key 因此延伸出 /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "usStock" | "newsAgent"
+// 迷因雷達、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣不同的資料
+// 形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
+type TabKey = Universe | "meme" | "usStock" | "newsAgent" | "optionsAnalytics"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "major", label: "主流幣" },
@@ -56,6 +61,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "meme", label: "迷因雷達" },
   { key: "usStock", label: "美股 ORB" },
   { key: "newsAgent", label: "AI 智能輿情雷達" },
+  { key: "optionsAnalytics", label: "📊 期權分析" },
 ]
 
 export function TradeDashboard() {
@@ -65,16 +71,34 @@ export function TradeDashboard() {
   const isMemeMode = mode === "meme"
   const isUSStockMode = mode === "usStock"
   const isNewsAgentMode = mode === "newsAgent"
+  const isOptionsMode = mode === "optionsAnalytics"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isUSStockMode || isNewsAgentMode ? null : `/api/signals?universe=${mode}`,
+    isMemeMode || isUSStockMode || isNewsAgentMode || isOptionsMode ? null : `/api/signals?universe=${mode}`,
     fetcher,
     { refreshInterval: mode === "major" ? 5000 : 12000 },
   )
+
+  // 📊 期權分析：美股盤中 GEX 剖面每分鐘才會重算一次，不需要跟加密貨幣一樣
+  // 秒級輪詢；大單流稍微快一點，才不會漏掉盤中即時的大單事件。
+  const {
+    data: rawOptionsGex,
+    error: optionsGexError,
+    isLoading: optionsGexLoading,
+  } = useSWR<BackendOptionsGexListResponse>(isOptionsMode ? "/api/options/gex" : null, fetcher, {
+    refreshInterval: 30000,
+  })
+
+  const {
+    data: rawWhaleSweep,
+    isLoading: whaleSweepLoading,
+  } = useSWR<BackendWhaleSweepResponse>(isOptionsMode ? "/api/options/whale-sweep" : null, fetcher, {
+    refreshInterval: 15000,
+  })
 
   const {
     data: rawMemes,
@@ -136,6 +160,11 @@ export function TradeDashboard() {
     [rawUSStockHistory],
   )
   const newsItems = useMemo(() => (rawNews ? adaptNewsAgent(rawNews) : []), [rawNews])
+  const optionsGexData = useMemo(
+    () => (rawOptionsGex ? adaptOptionsGexList(rawOptionsGex) : { underlyings: [], moomooConnected: false }),
+    [rawOptionsGex],
+  )
+  const whaleSweepItems = useMemo(() => (rawWhaleSweep ? adaptWhaleSweep(rawWhaleSweep) : []), [rawWhaleSweep])
   const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
 
   // Keep the selection sane across tab switches and data refreshes: default
@@ -175,21 +204,27 @@ export function TradeDashboard() {
       ? usStocksError
       : isNewsAgentMode
         ? newsError
-        : signalsError
+        : isOptionsMode
+          ? optionsGexError
+          : signalsError
   const activeLoading = isMemeMode
     ? memesLoading
     : isUSStockMode
       ? usStocksLoading
       : isNewsAgentMode
         ? newsLoading
-        : signalsLoading
+        : isOptionsMode
+          ? optionsGexLoading
+          : signalsLoading
   const isConnected = isMemeMode
     ? !memesError && !!rawMemes
     : isUSStockMode
       ? !usStocksError && !!rawUSStocks
       : isNewsAgentMode
         ? !newsError && !!rawNews
-        : !signalsError && !!rawSignals
+        : isOptionsMode
+          ? !optionsGexError && !!rawOptionsGex
+          : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -336,6 +371,21 @@ export function TradeDashboard() {
             AI 智能輿情雷達為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
             等公開新聞來源，交給 AI 判斷相關標的與情緒分數（-10~+10），純粹是資訊監控，
             <strong className="text-foreground">不是交易訊號</strong>，沒有方向、槓桿或 TP/SL。
+          </p>
+        </>
+      ) : isOptionsMode ? (
+        <>
+          <OptionsAnalyticsPanel
+            underlyings={optionsGexData.underlyings}
+            whaleSweepItems={whaleSweepItems}
+            moomooConnected={optionsGexData.moomooConnected}
+            isLoading={optionsGexLoading}
+            whaleSweepLoading={whaleSweepLoading}
+          />
+          <p className="text-center text-xs text-muted-foreground">
+            期權分析為獨立功能：串接 Moomoo/Futu OpenD 期權鏈，自行用 Black-Scholes 模型計算 Gamma
+            曝險（GEX）分佈與擠壓臨界點，<strong className="text-foreground">純粹是造市商部位結構的參考資訊，不是交易訊號</strong>
+            ，沒有方向、槓桿或 TP/SL。首批監控標的：NVDA / TSLA / SPY / SMCI / SPCX，僅在美股交易時段更新。
           </p>
         </>
       ) : (
