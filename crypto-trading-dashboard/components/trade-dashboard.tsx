@@ -43,6 +43,7 @@ import { USStockHistory } from "@/components/us-stock-history"
 import { NewsRadar } from "@/components/news-radar"
 import { SqueezeFeed } from "@/components/squeeze-feed"
 import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
+import { TradingChatbot } from "@/components/trading-chatbot"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -228,6 +229,7 @@ export function TradeDashboard() {
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
+    <>
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 px-4 py-6 md:px-8 md:py-10">
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
@@ -458,6 +460,8 @@ export function TradeDashboard() {
         </p>
       </footer>
     </main>
+    <TradingChatbot />
+    </>
   )
 }
 

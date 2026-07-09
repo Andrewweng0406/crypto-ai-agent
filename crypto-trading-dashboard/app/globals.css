@@ -99,3 +99,25 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 💬 AI 交易軍師助理：收合按鈕的呼吸燈效果，box-shadow 慢慢放大/縮小模擬
+   燈光呼吸，比單純的透明度 pulse 更有精緻感。 */
+@keyframes chatbot-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.72 0.16 154 / 45%), 0 4px 14px 0 oklch(0.72 0.16 154 / 25%);
+  }
+  50% {
+    box-shadow: 0 0 0 10px oklch(0.72 0.16 154 / 0%), 0 4px 20px 4px oklch(0.72 0.16 154 / 35%);
+  }
+}
+
+.animate-chatbot-breathe {
+  animation: chatbot-breathe 2.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-chatbot-breathe {
+    animation: none;
+  }
+}
