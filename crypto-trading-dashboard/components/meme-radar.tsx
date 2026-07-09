@@ -5,6 +5,7 @@ import { Flame, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type MemeAlert, type MemeWatchItem, formatPrice, formatTime } from "@/lib/signals"
 import { MemeResonanceBoard } from "@/components/meme-resonance-board"
+import { SqueezeBadge } from "@/components/squeeze-badge"
 
 const SPIKE_THRESHOLD = 3.0
 
@@ -103,6 +104,7 @@ export function MemeRadar({ alerts, watchlist, isLoading, error }: MemeRadarProp
                   24h <ChangeBadge pct={item.change24hPct} />
                 </span>
               </div>
+              <SqueezeBadge squeeze={item.squeeze} />
             </button>
           )
         })}

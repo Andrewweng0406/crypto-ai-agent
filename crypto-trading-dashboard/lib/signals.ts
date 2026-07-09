@@ -34,6 +34,8 @@ export interface HistoryStats {
 // Raw shapes returned by the FastAPI backend (see main.py Pydantic models).
 // ---------------------------------------------------------------------------
 
+export type SqueezeTier = "none" | "blue" | "yellow" | "green"
+
 export interface BackendSignalResponse {
   symbol: string
   status: "OPEN" | "NO_SIGNAL"
@@ -54,6 +56,41 @@ export interface BackendSignalResponse {
   funding_rate: number | null
   top_trader_long_short_ratio: number | null
   smart_money_bias: "Bullish" | "Bearish" | "Neutral" | null
+  squeeze_tier: SqueezeTier
+  squeeze_has_perp_market: boolean
+  squeeze_oi_growth_15m_pct: number | null
+  squeeze_oi_growth_1h_pct: number | null
+  squeeze_rvol: number | null
+  squeeze_funding_rate: number | null
+}
+
+// 多空情緒擠壓爆破模式（獨立、實驗性模塊，未經回測驗證）共用的欄位形狀，
+// 市場掃描（Monitoring）跟迷因雷達（MemeWatchItem）都用同一個 type。
+export interface SqueezeInfo {
+  tier: SqueezeTier
+  hasPerpMarket: boolean
+  oiGrowth15mPct: number | null
+  oiGrowth1hPct: number | null
+  rvol: number | null
+  fundingRate: number | null
+}
+
+function adaptSqueezeInfo(raw: {
+  squeeze_tier: SqueezeTier
+  squeeze_has_perp_market: boolean
+  squeeze_oi_growth_15m_pct: number | null
+  squeeze_oi_growth_1h_pct: number | null
+  squeeze_rvol: number | null
+  squeeze_funding_rate: number | null
+}): SqueezeInfo {
+  return {
+    tier: raw.squeeze_tier,
+    hasPerpMarket: raw.squeeze_has_perp_market,
+    oiGrowth15mPct: raw.squeeze_oi_growth_15m_pct,
+    oiGrowth1hPct: raw.squeeze_oi_growth_1h_pct,
+    rvol: raw.squeeze_rvol,
+    fundingRate: raw.squeeze_funding_rate,
+  }
 }
 
 export interface BackendHistoryItem {
@@ -119,6 +156,12 @@ export interface BackendMemeWatchItem {
   last_resonance_summary: string | null
   last_resonance_at: string | null
   updated_at: string | null
+  squeeze_tier: SqueezeTier
+  squeeze_has_perp_market: boolean
+  squeeze_oi_growth_15m_pct: number | null
+  squeeze_oi_growth_1h_pct: number | null
+  squeeze_rvol: number | null
+  squeeze_funding_rate: number | null
 }
 
 export interface BackendMemeRadarResponse {
@@ -149,6 +192,7 @@ export interface MemeWatchItem {
   lastResonanceSummary: string | null
   lastResonanceAt: string | null
   updatedAt: string | null
+  squeeze: SqueezeInfo
 }
 
 export function adaptMemeAlerts(raw: BackendMemeRadarResponse): MemeAlert[] {
@@ -176,6 +220,7 @@ export function adaptMemeWatchlist(raw: BackendMemeRadarResponse): MemeWatchItem
     lastResonanceSummary: w.last_resonance_summary,
     lastResonanceAt: w.last_resonance_at,
     updatedAt: w.updated_at,
+    squeeze: adaptSqueezeInfo(w),
   }))
 }
 
@@ -225,6 +270,7 @@ export interface Monitoring {
   fundingRate: number | null
   topTraderRatio: number | null
   bias: "Bullish" | "Bearish" | "Neutral" | null
+  squeeze: SqueezeInfo
 }
 
 function adaptMonitoring(raw: BackendSignalResponse): Monitoring {
@@ -235,6 +281,7 @@ function adaptMonitoring(raw: BackendSignalResponse): Monitoring {
     fundingRate: raw.funding_rate,
     topTraderRatio: raw.top_trader_long_short_ratio,
     bias: raw.smart_money_bias,
+    squeeze: adaptSqueezeInfo(raw),
   }
 }
 
@@ -578,4 +625,51 @@ export function formatTime(iso: string): string {
     minute: "2-digit",
     timeZone: "Asia/Taipei",
   })
+}
+
+export function formatClockTime(iso: string): string {
+  // HH:MM:SS，給 Squeeze Feed 那種終端機風格的滾動牆用
+  return new Date(iso).toLocaleString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Taipei",
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 多空情緒擠壓爆破模式（Squeeze Mode，獨立、實驗性模塊）：市場掃描 + 迷因雷達
+// 共用同一份 green 燈號事件滾動牆。
+// ---------------------------------------------------------------------------
+
+export interface BackendSqueezeFeedItem {
+  symbol: string
+  oi_growth_1h_pct: number | null
+  rvol: number | null
+  funding_rate: number | null
+  triggered_at: string
+}
+
+export interface BackendSqueezeFeedResponse {
+  items: BackendSqueezeFeedItem[]
+  updated_at: string | null
+}
+
+export interface SqueezeFeedItem {
+  symbol: string
+  oiGrowth1hPct: number | null
+  rvol: number | null
+  fundingRate: number | null
+  triggeredAt: string
+}
+
+export function adaptSqueezeFeed(raw: BackendSqueezeFeedResponse): SqueezeFeedItem[] {
+  return raw.items.map((item) => ({
+    symbol: item.symbol,
+    oiGrowth1hPct: item.oi_growth_1h_pct,
+    rvol: item.rvol,
+    fundingRate: item.funding_rate,
+    triggeredAt: item.triggered_at,
+  }))
 }

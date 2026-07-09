@@ -188,6 +188,31 @@ ATTENTION_OVERHEAT_RANK_CUTOFF = 3       # 排進前3名才算「注意力過熱
 ATTENTION_OVERHEAT_STREAK_THRESHOLD = 4  # 連續4次（=1小時）都在前3名 -> 視為已經被
                                           # 市場充分發現、可能是狂熱頂部，攔截新的共振推播（防追高）
 
+# --- 多空情緒擠壓爆破模式（Squeeze Mode，獨立模塊，實驗性策略，未經回測驗證）---
+# ⚠️ 誠實聲明：
+#   1. 沒有爆倉數據——BingX 透過 ccxt 不支援爆倉相關端點（fetchLiquidations /
+#      watchLiquidations 皆為 False/None），所以判斷完全不用爆倉量，只用「持倉量
+#      (OI) 成長率 + 現貨RVOL + 資金費率」這三個真的拿得到的數據。
+#   2. OI 沒有歷史 API——BingX 的 fetchOpenInterestHistory 直接回「不支援」，只有
+#      fetchOpenInterest（當下快照）能用。「OI成長率」是系統自己每 5 分鐘輪詢一次
+#      、累積出時間序列才算得出來的，不是交易所直接提供。這代表剛部署的頭幾個
+#      小時，成長率會是 None（資料還在累積中），不是 bug。
+#   3. 不是每個候選幣都有永續合約——迷因幣候選池裡有些幣只有現貨、沒有合約市場
+#      （例如 PEPE、BONK），這些幣沒有 OI/資金費率可查，會標示「無合約市場」。
+#   4. 這整套邏輯（OI暴增 + RVOL + 資金費率極端值的組合）完全沒有回測驗證過，
+#      不是「高勝率保證」，前端不會用「黃金開倉點」這種話術。
+SQUEEZE_OI_POLL_INTERVAL_SECONDS = 300  # 每5分鐘輪詢一次OI快照（同時也是整個模塊的掃描頻率）
+SQUEEZE_OI_HISTORY_LEN = 48             # 48筆 x 5分鐘 = 4小時歷史
+SQUEEZE_OI_LOOKBACK_15M_SAMPLES = 3     # 15分鐘 / 5分鐘一筆 = 回看3筆前
+SQUEEZE_OI_LOOKBACK_1H_SAMPLES = 12     # 1小時 / 5分鐘一筆 = 回看12筆前
+SQUEEZE_OI_GROWTH_BLUE_PCT = 15.0       # 藍燈（短線頭皮檔）：15分鐘OI成長門檻
+SQUEEZE_OI_GROWTH_GREEN_PCT = 30.0      # 綠燈/黃燈：1小時OI成長門檻
+SQUEEZE_RVOL_THRESHOLD = 3.0            # 綠燈現貨共振門檻
+SQUEEZE_TIMEFRAME = "15m"               # 算RVOL/價格突破用的K線週期
+SQUEEZE_VOLUME_LOOKBACK = 20            # RVOL基準週期（不含當根）
+SQUEEZE_BREAKOUT_LOOKBACK = 20          # 判斷「價格突破」用的回看K棒數（不含當根）
+SQUEEZE_FEED_MAX_LEN = 30               # 擠壓警報滾動牆保留筆數
+
 # --- 美股當沖 ORB（Opening Range Breakout，獨立模塊，實驗性策略）---
 # ⚠️ 這是使用者直接指定的策略邏輯（開盤區間突破 + RVOL 過濾 + 大盤濾網），
 # 跟上面主流幣的 4h 唐奇安策略不同：那個經過近1年+前1年樣本外回測才上線，
@@ -389,6 +414,14 @@ class SignalResponse(BaseModel):
     top_trader_long_short_ratio: Optional[float] = None
     smart_money_bias: Optional[Literal["Bullish", "Bearish", "Neutral"]] = None
 
+    # 多空情緒擠壓爆破模式（獨立、實驗性，未經回測驗證，見 SqueezeState 說明）
+    squeeze_tier: Literal["none", "blue", "yellow", "green"] = "none"
+    squeeze_has_perp_market: bool = True
+    squeeze_oi_growth_15m_pct: Optional[float] = None
+    squeeze_oi_growth_1h_pct: Optional[float] = None
+    squeeze_rvol: Optional[float] = None
+    squeeze_funding_rate: Optional[float] = None
+
 
 class SignalListResponse(BaseModel):
     universe: Literal["major", "scan"]
@@ -463,10 +496,34 @@ class MemeWatchItem(BaseModel):
     last_resonance_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+    # 多空情緒擠壓爆破模式（獨立、實驗性，未經回測驗證，見 SqueezeState 說明）——
+    # 不是每個迷因幣都有永續合約，沒有的話 squeeze_has_perp_market=False，其餘
+    # squeeze 欄位都會是 None／"none"。
+    squeeze_tier: Literal["none", "blue", "yellow", "green"] = "none"
+    squeeze_has_perp_market: bool = True
+    squeeze_oi_growth_15m_pct: Optional[float] = None
+    squeeze_oi_growth_1h_pct: Optional[float] = None
+    squeeze_rvol: Optional[float] = None
+    squeeze_funding_rate: Optional[float] = None
+
 
 class MemeRadarResponse(BaseModel):
     alerts: List[MemeAlertResponse]  # 依觸發時間新到舊排序
     watchlist: List[MemeWatchItem]   # 動態迷因幣監控名單（見 state.meme_universe），不管有沒有警報都回傳
+    updated_at: Optional[str] = None
+
+
+class SqueezeFeedItem(BaseModel):
+    symbol: str
+    oi_growth_1h_pct: Optional[float] = None
+    rvol: Optional[float] = None
+    funding_rate: Optional[float] = None
+    triggered_at: str
+
+
+class SqueezeFeedResponse(BaseModel):
+    # 市場掃描、迷因雷達共用同一份 green 燈號事件滾動牆，不分來源，依觸發時間新到舊排序
+    items: List[SqueezeFeedItem]
     updated_at: Optional[str] = None
 
 
@@ -602,6 +659,27 @@ class MemeAlertState:
         self.last_updated: Optional[str] = None
 
 
+class SqueezeState:
+    """
+    單一標的的多空情緒擠壓爆破狀態，套用在市場掃描（永續合約）跟迷因雷達
+    （現貨，需解析對應的永續合約才查得到OI/資金費率）兩組標的上。跟交易部位
+    無關，純粹是一組風險/機會提示燈號，見 compute_squeeze_tier 的判定邏輯。
+    """
+
+    def __init__(self) -> None:
+        self.perp_symbol: Optional[str] = None   # 對應的永續合約符號；還沒解析過是 None
+        self.has_perp_market: bool = True         # 解析過一次之後，若確定沒有合約市場會設 False
+        self.oi_history: Deque[float] = deque(maxlen=SQUEEZE_OI_HISTORY_LEN)  # 系統自行輪詢累積，見模塊說明
+        self.funding_rate: Optional[float] = None
+        self.rvol: Optional[float] = None
+        self.is_breakout: bool = False
+        self.oi_growth_15m_pct: Optional[float] = None
+        self.oi_growth_1h_pct: Optional[float] = None
+        self.tier: Literal["none", "blue", "yellow", "green"] = "none"
+        self.tier_active: bool = False  # green tier 的邊緣觸發狀態，避免同一次擠壓重複推播/重複記錄feed
+        self.last_updated: Optional[str] = None
+
+
 class USStockState:
     """單一美股代幣化商品的 ORB 當沖狀態：開盤區間、RVOL、部位，跟主流幣的 symbols 完全分開。"""
 
@@ -639,6 +717,12 @@ class AppState:
         self.last_meme_universe_refresh: float = 0.0  # time.monotonic() 時間戳
         self.last_attention_refresh: float = 0.0       # time.monotonic() 時間戳（CoinGecko熱門榜）
 
+        # 多空情緒擠壓爆破模式（獨立狀態，套用在市場掃描+迷因雷達兩組標的上，
+        # 用「原始標的符號」當key，不是永續合約符號，因為迷因雷達那邊是現貨符號）
+        self.squeeze_states: Dict[str, SqueezeState] = {}
+        self.squeeze_feed: Deque[dict] = deque(maxlen=SQUEEZE_FEED_MAX_LEN)
+        self.last_squeeze_scan_at: float = 0.0  # time.monotonic() 時間戳
+
         # 美股 ORB 當沖（獨立狀態，跟上面兩組完全分開；市場濾網是全域共用一份，
         # 不是逐檔各自算，因為所有標的都拿同一個大盤指數當濾網）
         self.us_stock_states: Dict[str, USStockState] = {}
@@ -655,6 +739,11 @@ class AppState:
         if symbol not in self.meme_states:
             self.meme_states[symbol] = MemeAlertState()
         return self.meme_states[symbol]
+
+    def get_squeeze_state(self, symbol: str) -> SqueezeState:
+        if symbol not in self.squeeze_states:
+            self.squeeze_states[symbol] = SqueezeState()
+        return self.squeeze_states[symbol]
 
     def get_symbol_state(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
@@ -1982,6 +2071,216 @@ async def news_agent_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6.8 多空情緒擠壓爆破模式（Squeeze Mode，獨立模塊，實驗性策略）
+# ---------------------------------------------------------------------------
+
+def _resolve_perp_symbol(symbol: str, exchange) -> Optional[str]:
+    """
+    市場掃描的標的本來就是永續合約符號（如 SOL/USDT:USDT），原樣回傳；迷因雷達
+    的標的是現貨符號（如 PEPE/USDT），嘗試解析出對應的永續合約符號，該交易所沒
+    掛牌的話回傳 None（呼叫端會標示「無合約市場」，不是錯誤）。
+    """
+    if symbol.endswith(":USDT"):
+        return symbol
+    base = symbol.split("/")[0]
+    candidate = f"{base}/USDT:USDT"
+    return candidate if candidate in exchange.markets else None
+
+
+def compute_oi_growth_pct(oi_history: Deque[float], lookback_samples: int) -> Optional[float]:
+    """
+    比較目前 OI 與 lookback_samples 筆之前的 OI，回傳成長百分比。歷史筆數不夠
+    （還沒累積到那麼久）時回傳 None——這是「資料還在累積中」，不是異常。
+    """
+    if len(oi_history) <= lookback_samples:
+        return None
+    old = oi_history[-(lookback_samples + 1)]
+    new = oi_history[-1]
+    if not old:
+        return None
+    return (new - old) / old * 100
+
+
+def compute_squeeze_price_volume(df: pd.DataFrame) -> Optional[dict]:
+    """
+    在 Squeeze 用的15分鐘K線上算 RVOL（當根成交量 / 過去N根均量，不含當根）跟
+    是否價格突破（收盤價 > 過去N根最高點，不含當根）。跟迷因雷達的
+    compute_volume_snapshot 是同樣的「不含當根」精神，避免自己墊高自己的基準。
+    """
+    min_len = max(SQUEEZE_VOLUME_LOOKBACK, SQUEEZE_BREAKOUT_LOOKBACK) + 2
+    if len(df) < min_len:
+        return None
+
+    last = df.iloc[-1]
+    volume_baseline = df["volume"].iloc[-(SQUEEZE_VOLUME_LOOKBACK + 1):-1]
+    avg_volume = volume_baseline.mean()
+    if pd.isna(avg_volume) or avg_volume <= 0:
+        return None
+    rvol = float(last["volume"] / avg_volume)
+
+    prior_high = df["high"].iloc[-(SQUEEZE_BREAKOUT_LOOKBACK + 1):-1].max()
+    is_breakout = bool(last["close"] > prior_high)
+
+    return {"rvol": rvol, "is_breakout": is_breakout}
+
+
+def compute_squeeze_tier(
+    oi_growth_15m_pct: Optional[float],
+    oi_growth_1h_pct: Optional[float],
+    rvol: Optional[float],
+    funding_rate: Optional[float],
+    is_breakout: bool,
+) -> Literal["none", "blue", "yellow", "green"]:
+    """
+    三種燈號的判定優先順序 green > yellow > blue > none：
+      - green（三鐵律）：1h OI成長 >= 30% 且 RVOL >= 3.0 且 資金費率達極端值
+      - yellow（過熱警示）：1h OI成長 >= 30% 但 RVOL 或資金費率其中一項沒到，
+        代表持倉在瘋狂堆積但還沒被現貨或情緒面證實，變盤風險高但還不到三鐵律
+      - blue（短線頭皮檔）：15分鐘 OI成長 >= 15% 且價格出現突破
+      - none：以上皆非
+
+    ⚠️ 這整套組合（OI成長+RVOL+資金費率極端值）完全沒有回測驗證過，是使用者
+    直接指定的實驗性邏輯，不是驗證過的高勝率保證。
+    """
+    rvol_confirmed = rvol is not None and rvol >= SQUEEZE_RVOL_THRESHOLD
+    funding_extreme = funding_rate is not None and (
+        funding_rate >= FUNDING_RATE_HIGH or funding_rate <= FUNDING_RATE_LOW
+    )
+    oi_1h_surged = oi_growth_1h_pct is not None and oi_growth_1h_pct >= SQUEEZE_OI_GROWTH_GREEN_PCT
+
+    if oi_1h_surged and rvol_confirmed and funding_extreme:
+        return "green"
+    if oi_1h_surged:
+        return "yellow"
+
+    oi_15m_surged = oi_growth_15m_pct is not None and oi_growth_15m_pct >= SQUEEZE_OI_GROWTH_BLUE_PCT
+    if oi_15m_surged and is_breakout:
+        return "blue"
+
+    return "none"
+
+
+async def scan_squeeze_mode(exchange_pool: dict) -> None:
+    """
+    每 SQUEEZE_OI_POLL_INTERVAL_SECONDS 秒，對主流幣 + 市場掃描名單 + 迷因雷達
+    監控名單逐一輪詢 OI/資金費率/15分鐘K線，累積 OI 歷史、算出燈號。green 燈號
+    邊緣觸發時記錄進 squeeze_feed 滾動牆並推播 Telegram。
+    """
+    now = time.monotonic()
+    if now - state.last_squeeze_scan_at < SQUEEZE_OI_POLL_INTERVAL_SECONDS:
+        return
+
+    async with state.lock:
+        candidate_symbols = list(dict.fromkeys(MAJOR_SYMBOLS + state.scan_universe + state.meme_universe))
+
+    exchange = exchange_pool[state.active_exchange_name]
+    new_green_alerts: List[dict] = []
+
+    for symbol in candidate_symbols:
+        async with state.lock:
+            sq_state = state.get_squeeze_state(symbol)
+            perp_symbol = sq_state.perp_symbol
+            already_resolved = perp_symbol is not None or not sq_state.has_perp_market
+
+        if not already_resolved:
+            perp_symbol = _resolve_perp_symbol(symbol, exchange)
+            async with state.lock:
+                sq_state = state.get_squeeze_state(symbol)
+                sq_state.perp_symbol = perp_symbol
+                sq_state.has_perp_market = perp_symbol is not None
+
+        if not perp_symbol:
+            continue  # 沒有合約市場（例如純現貨迷因幣），前端顯示「無合約市場」，這裡直接跳過
+
+        oi_value: Optional[float] = None
+        funding_rate: Optional[float] = None
+        pv: Optional[dict] = None
+
+        try:
+            oi = await exchange.fetch_open_interest(perp_symbol)
+            oi_value = oi.get("openInterestValue") or oi.get("openInterestAmount")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Squeeze模式抓取OI失敗（%s）：%s", perp_symbol, exc)
+
+        try:
+            funding = await exchange.fetch_funding_rate(perp_symbol)
+            funding_rate = funding.get("fundingRate")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Squeeze模式抓取資金費率失敗（%s）：%s", perp_symbol, exc)
+
+        try:
+            df = await fetch_ohlcv_for_symbol(
+                exchange_pool, perp_symbol, timeframe=SQUEEZE_TIMEFRAME,
+                limit=max(SQUEEZE_VOLUME_LOOKBACK, SQUEEZE_BREAKOUT_LOOKBACK) + 10,
+            )
+            pv = compute_squeeze_price_volume(df)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Squeeze模式抓取K線失敗（%s）：%s", perp_symbol, exc)
+
+        async with state.lock:
+            sq_state = state.get_squeeze_state(symbol)
+            if oi_value is not None:
+                sq_state.oi_history.append(float(oi_value))
+            sq_state.funding_rate = funding_rate
+            if pv is not None:
+                sq_state.rvol = pv["rvol"]
+                sq_state.is_breakout = pv["is_breakout"]
+
+            oi_growth_15m = compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_15M_SAMPLES)
+            oi_growth_1h = compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_1H_SAMPLES)
+            sq_state.oi_growth_15m_pct = oi_growth_15m
+            sq_state.oi_growth_1h_pct = oi_growth_1h
+
+            tier = compute_squeeze_tier(oi_growth_15m, oi_growth_1h, sq_state.rvol, funding_rate, sq_state.is_breakout)
+            sq_state.tier = tier
+            sq_state.last_updated = datetime.now(timezone.utc).isoformat()
+
+            if tier == "green":
+                if not sq_state.tier_active:
+                    sq_state.tier_active = True
+                    feed_record = {
+                        "symbol": symbol,
+                        "oi_growth_1h_pct": oi_growth_1h,
+                        "rvol": sq_state.rvol,
+                        "funding_rate": funding_rate,
+                        "triggered_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    state.squeeze_feed.appendleft(feed_record)
+                    new_green_alerts.append(feed_record)
+            else:
+                sq_state.tier_active = False
+
+    state.last_squeeze_scan_at = now
+
+    # 推播放在鎖外面，理由同 run_tick
+    for alert in new_green_alerts:
+        await send_telegram_message(
+            f"⚡ <b>SQUEEZE SIGNAL</b>\n{alert['symbol']} 多空持倉擠壓完成，爆破動能啟動\n"
+            f"OI 1h成長：{(alert['oi_growth_1h_pct'] or 0):+.1f}% ／ "
+            f"RVOL：{(alert['rvol'] or 0):.2f}x ／ "
+            f"資金費率：{(alert['funding_rate'] or 0) * 100:.3f}%\n\n"
+            f"⚠️ 此訊號組合未經回測驗證，請自行判斷風險"
+        )
+
+
+async def squeeze_mode_loop(exchange_pool: dict) -> None:
+    """背景永久迴圈：每 SQUEEZE_OI_POLL_INTERVAL_SECONDS 秒跑一次 scan_squeeze_mode。"""
+    while True:
+        failure_notification: Optional[str] = None
+        try:
+            await scan_squeeze_mode(exchange_pool)
+            failure_notification = _record_loop_outcome("Squeeze模式迴圈", success=True)
+        except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
+            logger.error("Squeeze模式背景迴圈發生錯誤：%s", exc)
+            failure_notification = _record_loop_outcome("Squeeze模式迴圈", success=False)
+
+        if failure_notification:
+            await send_telegram_message(failure_notification)
+
+        await asyncio.sleep(SQUEEZE_OI_POLL_INTERVAL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # 7. 多標的追蹤名單管理
 # ---------------------------------------------------------------------------
 
@@ -2360,6 +2659,22 @@ def save_state_snapshot() -> None:
             },
             "meme_alerts": list(state.meme_alerts),
             "meme_universe": state.meme_universe,
+            "squeeze_states": {
+                symbol: {
+                    "perp_symbol": sq.perp_symbol,
+                    "has_perp_market": sq.has_perp_market,
+                    "oi_history": list(sq.oi_history),
+                    "funding_rate": sq.funding_rate,
+                    "rvol": sq.rvol,
+                    "is_breakout": sq.is_breakout,
+                    "oi_growth_15m_pct": sq.oi_growth_15m_pct,
+                    "oi_growth_1h_pct": sq.oi_growth_1h_pct,
+                    "tier": sq.tier,
+                    "tier_active": sq.tier_active,
+                }
+                for symbol, sq in state.squeeze_states.items()
+            },
+            "squeeze_feed": list(state.squeeze_feed),
             "us_stock_states": {
                 symbol: {
                     "open_signal": s.open_signal,
@@ -2415,6 +2730,21 @@ def load_state_snapshot() -> None:
 
         state.meme_alerts.extend(snapshot.get("meme_alerts", []))
         state.meme_universe = snapshot.get("meme_universe", [])
+
+        for symbol, data in snapshot.get("squeeze_states", {}).items():
+            sq = state.get_squeeze_state(symbol)
+            sq.perp_symbol = data.get("perp_symbol")
+            sq.has_perp_market = data.get("has_perp_market", True)
+            sq.oi_history.extend(data.get("oi_history", []))
+            sq.funding_rate = data.get("funding_rate")
+            sq.rvol = data.get("rvol")
+            sq.is_breakout = data.get("is_breakout", False)
+            sq.oi_growth_15m_pct = data.get("oi_growth_15m_pct")
+            sq.oi_growth_1h_pct = data.get("oi_growth_1h_pct")
+            sq.tier = data.get("tier", "none")
+            sq.tier_active = data.get("tier_active", False)
+
+        state.squeeze_feed.extend(snapshot.get("squeeze_feed", []))
 
         for symbol, data in snapshot.get("us_stock_states", {}).items():
             us_state = state.get_us_stock_state(symbol)
@@ -2487,13 +2817,17 @@ async def lifespan(app: FastAPI):
         NEWS_SCAN_INTERVAL_SECONDS,
     )
 
+    squeeze_mode_task = asyncio.create_task(squeeze_mode_loop(exchange_pool))
+    logger.info("Squeeze模式背景迴圈已啟動（每 %d 秒輪詢OI+資金費率+現貨RVOL）", SQUEEZE_OI_POLL_INTERVAL_SECONDS)
+
     try:
         yield
     finally:
         monitor_task.cancel()
         us_stock_task.cancel()
         news_agent_task.cancel()
-        for task in (monitor_task, us_stock_task, news_agent_task):
+        squeeze_mode_task.cancel()
+        for task in (monitor_task, us_stock_task, news_agent_task, squeeze_mode_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -2528,6 +2862,7 @@ def _to_signal_response(symbol: str, updated_at_fallback: str) -> SignalResponse
     current_price = sym_state.current_price if sym_state else None
     updated_at = (sym_state.last_updated if sym_state and sym_state.last_updated else updated_at_fallback)
 
+    sq_state = state.squeeze_states.get(symbol)
     monitoring_fields = {
         "donchian_upper": sym_state.donchian_upper if sym_state else None,
         "donchian_lower": sym_state.donchian_lower if sym_state else None,
@@ -2537,6 +2872,12 @@ def _to_signal_response(symbol: str, updated_at_fallback: str) -> SignalResponse
             (sym_state.smart_money or {}).get("top_trader_long_short_ratio") if sym_state else None
         ),
         "smart_money_bias": (sym_state.smart_money or {}).get("bias") if sym_state else None,
+        "squeeze_tier": sq_state.tier if sq_state else "none",
+        "squeeze_has_perp_market": sq_state.has_perp_market if sq_state else True,
+        "squeeze_oi_growth_15m_pct": sq_state.oi_growth_15m_pct if sq_state else None,
+        "squeeze_oi_growth_1h_pct": sq_state.oi_growth_1h_pct if sq_state else None,
+        "squeeze_rvol": sq_state.rvol if sq_state else None,
+        "squeeze_funding_rate": sq_state.funding_rate if sq_state else None,
     }
 
     if signal is None:
@@ -2570,7 +2911,9 @@ def _to_signal_response(symbol: str, updated_at_fallback: str) -> SignalResponse
 async def get_signals(universe: Literal["major", "scan"] = "major") -> SignalListResponse:
     """
     universe=major：固定回傳 BTC/ETH/SOL 三檔的狀態（不管有沒有訊號都回傳，監控用）。
-    universe=scan：只回傳市場掃描名單中「目前真的有觸發訊號」的幣（找機會用）。
+    universe=scan：回傳市場掃描名單中「目前真的有觸發訊號」的幣，或是「Squeeze模式
+    燈號不是none」的幣（即使還沒觸發正式的唐奇安訊號，讓使用者能提早看到擠壓
+    爆破的候選機會，不用等到正式訊號才看得到）。
     """
     async with state.lock:
         if state.last_tick_at is None:
@@ -2581,7 +2924,8 @@ async def get_signals(universe: Literal["major", "scan"] = "major") -> SignalLis
         else:
             candidate_symbols = [
                 s for s in state.scan_universe
-                if state.symbols.get(s) and state.symbols[s].open_signal is not None
+                if (state.symbols.get(s) and state.symbols[s].open_signal is not None)
+                or (state.squeeze_states.get(s) and state.squeeze_states[s].tier != "none")
             ]
 
         signals = [_to_signal_response(symbol, state.last_tick_at) for symbol in candidate_symbols]
@@ -2674,6 +3018,7 @@ async def get_memes() -> MemeRadarResponse:
         watchlist = []
         for symbol in state.meme_universe:
             meme_state = state.meme_states.get(symbol)
+            sq_state = state.squeeze_states.get(symbol)
             watchlist.append(
                 MemeWatchItem(
                     symbol=symbol,
@@ -2688,6 +3033,12 @@ async def get_memes() -> MemeRadarResponse:
                     last_resonance_summary=meme_state.last_resonance_summary if meme_state else None,
                     last_resonance_at=meme_state.last_resonance_at if meme_state else None,
                     updated_at=meme_state.last_updated if meme_state else None,
+                    squeeze_tier=sq_state.tier if sq_state else "none",
+                    squeeze_has_perp_market=sq_state.has_perp_market if sq_state else True,
+                    squeeze_oi_growth_15m_pct=sq_state.oi_growth_15m_pct if sq_state else None,
+                    squeeze_oi_growth_1h_pct=sq_state.oi_growth_1h_pct if sq_state else None,
+                    squeeze_rvol=sq_state.rvol if sq_state else None,
+                    squeeze_funding_rate=sq_state.funding_rate if sq_state else None,
                 )
             )
         updated_at = max(
@@ -2696,6 +3047,17 @@ async def get_memes() -> MemeRadarResponse:
         )
 
     return MemeRadarResponse(alerts=alerts, watchlist=watchlist, updated_at=updated_at)
+
+
+@app.get("/api/squeeze-feed", response_model=SqueezeFeedResponse)
+async def get_squeeze_feed() -> SqueezeFeedResponse:
+    """
+    多空情緒擠壓爆破模式（獨立、實驗性模塊）的 green 燈號事件滾動牆，市場掃描跟
+    迷因雷達兩個分頁共用同一份。⚠️ 這套判斷未經回測驗證，不是高勝率保證。
+    """
+    async with state.lock:
+        items = [SqueezeFeedItem(**record) for record in state.squeeze_feed]
+    return SqueezeFeedResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
 @app.get("/api/candles", response_model=CandlesListResponse)

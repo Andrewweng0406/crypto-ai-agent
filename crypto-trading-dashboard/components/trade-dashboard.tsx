@@ -9,6 +9,7 @@ import {
   adaptMemeWatchlist,
   adaptNewsAgent,
   adaptSignalList,
+  adaptSqueezeFeed,
   adaptUSStockHistory,
   adaptUSStockList,
   fallbackHistory,
@@ -18,6 +19,7 @@ import {
   type BackendMemeRadarResponse,
   type BackendNewsAgentResponse,
   type BackendSignalListResponse,
+  type BackendSqueezeFeedResponse,
   type BackendUSStockHistoryResponse,
   type BackendUSStockListResponse,
   type Universe,
@@ -35,6 +37,7 @@ import { USStockWatchlist } from "@/components/us-stock-watchlist"
 import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
 import { USStockHistory } from "@/components/us-stock-history"
 import { NewsRadar } from "@/components/news-radar"
+import { SqueezeFeed } from "@/components/squeeze-feed"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -108,9 +111,19 @@ export function TradeDashboard() {
     refreshInterval: 15000,
   })
 
+  // Squeeze Mode 的 green 燈號滾動牆：市場掃描跟迷因雷達共用同一份資料
+  const isSqueezeFeedMode = mode === "scan" || isMemeMode
+  const {
+    data: rawSqueezeFeed,
+    isLoading: squeezeFeedLoading,
+  } = useSWR<BackendSqueezeFeedResponse>(isSqueezeFeedMode ? "/api/squeeze-feed" : null, fetcher, {
+    refreshInterval: 20000,
+  })
+
   const signals = useMemo(() => (rawSignals ? adaptSignalList(rawSignals) : []), [rawSignals])
   const memeAlerts = useMemo(() => (rawMemes ? adaptMemeAlerts(rawMemes) : []), [rawMemes])
   const memeWatchlist = useMemo(() => (rawMemes ? adaptMemeWatchlist(rawMemes) : []), [rawMemes])
+  const squeezeFeedItems = useMemo(() => (rawSqueezeFeed ? adaptSqueezeFeed(rawSqueezeFeed) : []), [rawSqueezeFeed])
   const usStockData = useMemo(
     () => (rawUSStocks ? adaptUSStockList(rawUSStocks) : { marketSession: "CLOSED" as const, marketRegime: "Neutral" as const, stocks: [] }),
     [rawUSStocks],
@@ -226,9 +239,11 @@ export function TradeDashboard() {
       {isMemeMode ? (
         <>
           <MemeRadar alerts={memeAlerts} watchlist={memeWatchlist} isLoading={memesLoading} error={undefined} />
+          <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
           <p className="text-center text-xs text-muted-foreground">
             迷因幣雷達為獨立功能：從迷因幣候選池依 24h 成交量動態排名監控前 10 大，純粹偵測現貨的成交量異常放大
-            （同時標示是拉盤還是砸盤），不是交易訊號，沒有方向、槓桿或 TP/SL。
+            （同時標示是拉盤還是砸盤），不是交易訊號，沒有方向、槓桿或 TP/SL。⚡ 爆破狀態燈號（Squeeze
+            Mode）是額外疊加的實驗性判斷，未經回測驗證。
           </p>
         </>
       ) : isUSStockMode ? (
@@ -328,13 +343,16 @@ export function TradeDashboard() {
           {mode === "major" ? (
             <SymbolWatchlist signals={signals} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
           ) : (
-            <OpportunityList
-              signals={signals}
-              trackedSymbols={rawSignals?.tracked_symbols ?? []}
-              selectedSymbol={selectedSymbol}
-              onSelect={setSelectedSymbol}
-              isLoading={signalsLoading}
-            />
+            <>
+              <OpportunityList
+                signals={signals}
+                trackedSymbols={rawSignals?.tracked_symbols ?? []}
+                selectedSymbol={selectedSymbol}
+                onSelect={setSelectedSymbol}
+                isLoading={signalsLoading}
+              />
+              <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
+            </>
           )}
 
           {selected && selected.status === "OPEN" && selected.signal ? (

@@ -1,6 +1,7 @@
 import { ArrowDownRight, ArrowUpRight, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type SignalState, formatPrice, formatTime } from "@/lib/signals"
+import { SqueezeBadge, squeezeRowHighlightClass } from "@/components/squeeze-badge"
 
 function shortSymbol(symbol: string): string {
   return symbol.replace(":USDT", "")
@@ -45,13 +46,67 @@ export function OpportunityList({ signals, trackedSymbols, selectedSymbol, onSel
     <div className="flex flex-col gap-2">
       {trackedSummary}
       {signals.map((s) => {
-        if (!s.signal) return null
-        const isLong = s.signal.side === "Long"
         const isSelected = s.symbol === selectedSymbol
-        const priceDelta = s.signal.current_price - s.signal.entry_price
-        const priceDeltaPct = (priceDelta / s.signal.entry_price) * 100
-        const roi = (isLong ? priceDeltaPct : -priceDeltaPct) * s.signal.leverage
+        const squeeze = s.monitoring.squeeze
 
+        // 有正式唐奇安訊號的標的：維持原本完整卡片（方向/槓桿/ROI）
+        if (s.signal) {
+          const isLong = s.signal.side === "Long"
+          const priceDelta = s.signal.current_price - s.signal.entry_price
+          const priceDeltaPct = (priceDelta / s.signal.entry_price) * 100
+          const roi = (isLong ? priceDeltaPct : -priceDeltaPct) * s.signal.leverage
+
+          return (
+            <button
+              key={s.symbol}
+              type="button"
+              onClick={() => onSelect(s.symbol)}
+              className={cn(
+                "flex flex-col gap-2 rounded-xl border px-4 py-3 text-left transition-colors",
+                isSelected
+                  ? "border-primary/60 bg-primary/[0.08]"
+                  : cn("border-border/60 bg-card hover:bg-secondary/40", squeezeRowHighlightClass(squeeze.tier)),
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold uppercase",
+                      isLong ? "bg-long text-long-foreground" : "bg-short text-short-foreground",
+                    )}
+                  >
+                    {isLong ? (
+                      <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <ArrowDownRight className="size-3.5" aria-hidden="true" />
+                    )}
+                    {s.signal.side}
+                  </span>
+                  <div className="flex flex-col">
+                    <span className="font-mono text-sm font-semibold">{shortSymbol(s.symbol)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {s.signal.leverage}x · Issued {formatTime(s.signal.timestamp)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-0.5">
+                  <span className="font-mono text-sm font-semibold">${formatPrice(s.signal.current_price)}</span>
+                  <span className={cn("font-mono text-xs font-semibold", roi >= 0 ? "text-long" : "text-short")}>
+                    {roi >= 0 ? "+" : ""}
+                    {roi.toFixed(2)}% ROI
+                  </span>
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <SqueezeBadge squeeze={squeeze} />
+              </div>
+            </button>
+          )
+        }
+
+        // 沒有正式訊號，但 Squeeze 燈號不是 none：輕量列出，讓使用者能提早看到
+        // 擠壓爆破的候選機會，不用等到唐奇安訊號才看得到。
         return (
           <button
             key={s.symbol}
@@ -59,37 +114,18 @@ export function OpportunityList({ signals, trackedSymbols, selectedSymbol, onSel
             onClick={() => onSelect(s.symbol)}
             className={cn(
               "flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors",
-              isSelected ? "border-primary/60 bg-primary/[0.08]" : "border-border/60 bg-card hover:bg-secondary/40",
+              isSelected
+                ? "border-primary/60 bg-primary/[0.08]"
+                : cn("border-border/60 bg-card hover:bg-secondary/40", squeezeRowHighlightClass(squeeze.tier)),
             )}
           >
-            <div className="flex items-center gap-3">
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold uppercase",
-                  isLong ? "bg-long text-long-foreground" : "bg-short text-short-foreground",
-                )}
-              >
-                {isLong ? (
-                  <ArrowUpRight className="size-3.5" aria-hidden="true" />
-                ) : (
-                  <ArrowDownRight className="size-3.5" aria-hidden="true" />
-                )}
-                {s.signal.side}
-              </span>
-              <div className="flex flex-col">
-                <span className="font-mono text-sm font-semibold">{shortSymbol(s.symbol)}</span>
-                <span className="text-xs text-muted-foreground">
-                  {s.signal.leverage}x · Issued {formatTime(s.signal.timestamp)}
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-col items-end gap-0.5">
-              <span className="font-mono text-sm font-semibold">${formatPrice(s.signal.current_price)}</span>
-              <span className={cn("font-mono text-xs font-semibold", roi >= 0 ? "text-long" : "text-short")}>
-                {roi >= 0 ? "+" : ""}
-                {roi.toFixed(2)}% ROI
+            <div className="flex flex-col">
+              <span className="font-mono text-sm font-semibold">{shortSymbol(s.symbol)}</span>
+              <span className="text-xs text-muted-foreground">
+                {s.currentPrice !== null ? `$${formatPrice(s.currentPrice)}` : "—"}
               </span>
             </div>
+            <SqueezeBadge squeeze={squeeze} />
           </button>
         )
       })}
