@@ -9,7 +9,7 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
   if (!data.hasData || data.points.length === 0 || data.spotPrice === null) {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-2 rounded-2xl border border-border/60 bg-card p-5 text-center text-sm text-muted-foreground md:h-80">
-        {data.hasData ? "此標的目前沒有可用的期權鏈資料" : "尚未連線 Moomoo OpenD 或還沒拉到資料"}
+        {data.hasData ? "此標的目前沒有可用的期權鏈資料" : "尚未拉到資料，可能是剛啟動還在拉第一輪，或美股非交易時段"}
       </div>
     )
   }

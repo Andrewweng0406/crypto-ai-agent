@@ -161,7 +161,7 @@ export function TradeDashboard() {
   )
   const newsItems = useMemo(() => (rawNews ? adaptNewsAgent(rawNews) : []), [rawNews])
   const optionsGexData = useMemo(
-    () => (rawOptionsGex ? adaptOptionsGexList(rawOptionsGex) : { underlyings: [], moomooConnected: false }),
+    () => (rawOptionsGex ? adaptOptionsGexList(rawOptionsGex) : { underlyings: [], dataSourceOk: false }),
     [rawOptionsGex],
   )
   const whaleSweepItems = useMemo(() => (rawWhaleSweep ? adaptWhaleSweep(rawWhaleSweep) : []), [rawWhaleSweep])
@@ -378,14 +378,15 @@ export function TradeDashboard() {
           <OptionsAnalyticsPanel
             underlyings={optionsGexData.underlyings}
             whaleSweepItems={whaleSweepItems}
-            moomooConnected={optionsGexData.moomooConnected}
+            dataSourceOk={optionsGexData.dataSourceOk}
             isLoading={optionsGexLoading}
             whaleSweepLoading={whaleSweepLoading}
           />
           <p className="text-center text-xs text-muted-foreground">
-            期權分析為獨立功能：串接 Moomoo/Futu OpenD 期權鏈，自行用 Black-Scholes 模型計算 Gamma
+            期權分析為獨立功能：串接 yfinance 期權鏈，自行用 Black-Scholes 模型計算 Gamma
             曝險（GEX）分佈與擠壓臨界點，<strong className="text-foreground">純粹是造市商部位結構的參考資訊，不是交易訊號</strong>
-            ，沒有方向、槓桿或 TP/SL。首批監控標的：NVDA / TSLA / SPY / SMCI / SPCX，僅在美股交易時段更新。
+            ，沒有方向、槓桿或 TP/SL。首批監控標的：NVDA / TSLA / SPY / SMCI / SPCX，僅在美股交易時段更新。期權大單即時流
+            目前資料源無法提供逐筆成交數據，暫不支援。
           </p>
         </>
       ) : (

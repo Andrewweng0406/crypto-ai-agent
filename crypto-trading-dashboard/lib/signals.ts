@@ -675,10 +675,10 @@ export function adaptSqueezeFeed(raw: BackendSqueezeFeedResponse): SqueezeFeedIt
 }
 
 // ---------------------------------------------------------------------------
-// 📊 期權分析（Options Analytics，獨立、實驗性模塊）：Moomoo/Futu OpenD 期權鏈
-// -> Black-Scholes GEX 計算引擎，找出 Gamma 擠壓臨界點 + 期權大單即時流。
-// 需要真實 Moomoo/Futu 帳戶 + OpenD 連線，has_data=false 代表還沒連上/還沒
-// 拉到資料，不是「這檔沒有擠壓」，前端要能區分這兩種狀態。
+// 📊 期權分析（Options Analytics，獨立、實驗性模塊）：yfinance 期權鏈 ->
+// Black-Scholes GEX 計算引擎，找出 Gamma 擠壓臨界點 + 期權大單即時流。
+// has_data=false 代表還沒拉到資料，不是「這檔沒有擠壓」，前端要能區分這兩種
+// 狀態。yfinance 沒有逐筆成交數據，whale_sweep_supported 恆為 false。
 // ---------------------------------------------------------------------------
 
 export interface BackendOptionsGexPoint {
@@ -701,7 +701,7 @@ export interface BackendOptionsGexResponse {
 
 export interface BackendOptionsGexListResponse {
   underlyings: BackendOptionsGexResponse[]
-  moomoo_connected: boolean
+  data_source_ok: boolean
   updated_at: string | null
 }
 
@@ -725,7 +725,7 @@ export interface OptionsGexData {
 
 export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
   underlyings: OptionsGexData[]
-  moomooConnected: boolean
+  dataSourceOk: boolean
 } {
   return {
     underlyings: raw.underlyings.map((u) => ({
@@ -738,7 +738,7 @@ export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
       whaleSweepSupported: u.whale_sweep_supported,
       updatedAt: u.updated_at,
     })),
-    moomooConnected: raw.moomoo_connected,
+    dataSourceOk: raw.data_source_ok,
   }
 }
 

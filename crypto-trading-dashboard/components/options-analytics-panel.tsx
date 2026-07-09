@@ -8,7 +8,7 @@ import { WhaleSweepStream } from "@/components/whale-sweep-stream"
 interface OptionsAnalyticsPanelProps {
   underlyings: OptionsGexData[]
   whaleSweepItems: WhaleSweepItem[]
-  moomooConnected: boolean
+  dataSourceOk: boolean
   isLoading: boolean
   whaleSweepLoading: boolean
 }
@@ -16,7 +16,7 @@ interface OptionsAnalyticsPanelProps {
 export function OptionsAnalyticsPanel({
   underlyings,
   whaleSweepItems,
-  moomooConnected,
+  dataSourceOk,
   isLoading,
   whaleSweepLoading,
 }: OptionsAnalyticsPanelProps) {
@@ -40,14 +40,14 @@ export function OptionsAnalyticsPanel({
       <div
         className={
           "flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs " +
-          (moomooConnected
+          (dataSourceOk
             ? "border-border/60 bg-card/60 text-muted-foreground"
             : "border-short/30 bg-short/[0.06] text-short")
         }
       >
-        <span className={`size-1.5 rounded-full ${moomooConnected ? "bg-long" : "bg-short"}`} aria-hidden="true" />
-        Moomoo OpenD：{moomooConnected ? "已連線" : "未連線"}
-        {!moomooConnected && "（尚未接上 OpenD 或美股非交易時段，GEX 資料可能是空的）"}
+        <span className={`size-1.5 rounded-full ${dataSourceOk ? "bg-long" : "bg-short"}`} aria-hidden="true" />
+        資料來源：{dataSourceOk ? "正常" : "暫無資料"}
+        {!dataSourceOk && "（美股非交易時段沒有新資料，或剛啟動還在拉第一輪）"}
       </div>
 
       <div className="flex flex-wrap gap-3">

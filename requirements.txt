@@ -9,4 +9,4 @@ aiohttp>=3.9.0
 tzdata>=2024.1
 feedparser>=6.0.0
 openai>=1.50.0
-futu-api>=9.3.5308
+yfinance>=0.2.40
