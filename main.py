@@ -2382,10 +2382,12 @@ async def squeeze_mode_loop(exchange_pool: dict) -> None:
 # ---------------------------------------------------------------------------
 # 6.9 📊 期權分析（Options Analytics，獨立模塊，實驗性功能）
 # ---------------------------------------------------------------------------
-# ⚠️ 這個模塊需要真實 Moomoo/Futu 帳戶 + 自行啟動的 OpenD 閘道程式才能運作，
-# 見 moomoo_client.py 開頭說明。GEX 計算邏輯（gex_engine.py）已用合成數據
-# 完整單元測試過；這裡負責「把 Moomoo 原始資料轉成 gex_engine 看得懂的格式」，
-# 第一次接上真實 OpenD 後務必核對一次實際數值。
+# ⚠️ 這個模塊需要真實 Moomoo/Futu 帳戶 + 自行啟動的 OpenD 閘道程式才能運作。
+# GEX 計算邏輯（gex_engine.py）已用合成數據完整單元測試過，資料存取層
+# （moomoo_client.py）也已對照使用者本機真實 OpenD 實測校準過欄位名稱/單位
+# （見該檔案開頭說明），NVDA/SPCX 真實 GEX 剖面跑出來的形狀符合預期（現貨
+# 附近有明顯正 GEX 高牆）。大單即時流的 TICKER 訂閱本身也確認可用，只剩
+# tick 事件的實際欄位內容要等盤中真實成交才能核對。
 
 _OPTION_CODE_PATTERN = re.compile(r"^US\.[A-Z]+(\d{6})([CP])(\d+)$")
 
@@ -3422,7 +3424,7 @@ async def get_options_gex() -> OptionsGexListResponse:
 
 @app.get("/api/options/whale-sweep", response_model=WhaleSweepResponse)
 async def get_options_whale_sweep() -> WhaleSweepResponse:
-    """期權大單即時流（實驗性，可行性未經真實帳號驗證，見 moomoo_client.py 說明）。"""
+    """期權大單即時流（實驗性；TICKER 訂閱可行性已實測確認，見 moomoo_client.py 說明）。"""
     async with state.lock:
         items = [WhaleSweepItem(**record) for record in state.whale_sweep_feed]
     return WhaleSweepResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
