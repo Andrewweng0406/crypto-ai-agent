@@ -1003,10 +1003,17 @@ def get_market_id(exchange, symbol: str) -> str:
 
 
 def _exchange_order() -> List[str]:
-    """目前 active 交易所優先，其餘候補交易所排在後面，用於備援重試。"""
-    return [state.active_exchange_name] + [
-        n for n in EXCHANGE_CANDIDATES if n != state.active_exchange_name
-    ]
+    """
+    永遠照 EXCHANGE_CANDIDATES 的固定優先順序重試（bingx 最優先，因為使用者
+    實際在這裡下單），不是「目前 active 的排最前面」。
+
+    先前的寫法會把「上次成功的交易所」排最前面：bingx 只要單次批次請求偶發
+    失敗一次，就會切到 okx，然後之後每一輪都優先試 okx——但 okx 沒有上架的
+    幣種（如 XAUT）會整輪被跳過不追蹤，若剛好那檔有未平倉部位，等於那段
+    期間 TP/SL 監控出現空窗。改成固定順序後，okx 只在 bingx「這一次」真的
+    失敗時才臨時頂上，下一輪會立刻優先重試 bingx，不會停留在 okx 上。
+    """
+    return list(EXCHANGE_CANDIDATES)
 
 
 async def fetch_ohlcv_for_symbol(
@@ -1034,6 +1041,7 @@ async def fetch_ohlcv_for_symbol(
             last_error = exc
             continue
 
+    logger.warning("%s 所有交易所皆抓取K線失敗：%s", symbol, last_error)
     raise RuntimeError(f"所有交易所皆抓取失敗（{symbol}）：{last_error}")
 
 
@@ -1068,11 +1076,12 @@ async def fetch_tickers_batch(exchange_pool: dict, symbols: List[str]) -> Dict[s
             }
 
             if name != state.active_exchange_name:
-                logger.warning("交易所 %s 失敗，已切換至 %s", state.active_exchange_name, name)
+                logger.warning("交易所 %s 這輪批次報價失敗，暫時改用 %s（下一輪會優先重試 %s）：%s", state.active_exchange_name, name, EXCHANGE_CANDIDATES[0], last_error)
                 state.active_exchange_name = name
 
             return prices
         except Exception as exc:  # noqa: BLE001
+            logger.warning("交易所 %s 批次報價失敗：%s", name, exc)
             last_error = exc
             continue
 
