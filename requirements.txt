@@ -3,8 +3,10 @@ uvicorn[standard]==0.30.6
 ccxt>=4.5.0
 pandas==2.2.2
 numpy==1.26.4
+scipy>=1.13.0
 pydantic==2.9.2
 aiohttp>=3.9.0
 tzdata>=2024.1
 feedparser>=6.0.0
 openai>=1.50.0
+futu-api>=9.3.5308
