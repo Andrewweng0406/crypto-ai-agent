@@ -1,15 +1,30 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Loader2, MessageCircle, Send, X } from "lucide-react"
+import useSWR from "swr"
+import { Loader2, MessageCircle, Radio, Send, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
+import {
+  adaptAssistantBroadcasts,
+  type AssistantBroadcastItem,
+  type BackendAssistantBroadcastResponse,
+} from "@/lib/signals"
 
 interface ChatMessage {
   role: "user" | "assistant"
   content: string
 }
+
+const broadcastFetcher = (url: string) =>
+  fetch(url).then(async (r) => {
+    const body = await r.json()
+    if (!r.ok) throw new Error(body?.detail ?? `Request failed (${r.status})`)
+    return body
+  })
+
+const BROADCAST_POLL_INTERVAL_MS = 8000
 
 interface TradingChatbotProps {
   // 預留數據接口：之後期權分析等分頁做好「使用者目前正在看哪檔標的」的
@@ -27,14 +42,36 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
   const [input, setInput] = useState("")
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastSeenBroadcastId, setLastSeenBroadcastId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // 💬 AI副官0-token戰況跑馬燈：不管面板開沒開都在輪詢，這樣收合狀態下才能
+  // 在按鈕上點一個提示燈，做到「隨時在幫你盯盤」而不是打開才看得到。
+  const { data: rawBroadcasts } = useSWR<BackendAssistantBroadcastResponse>(
+    "/api/ai-agent/broadcast",
+    broadcastFetcher,
+    { refreshInterval: BROADCAST_POLL_INTERVAL_MS },
+  )
+  const broadcasts = rawBroadcasts ? adaptAssistantBroadcasts(rawBroadcasts) : []
+  const latestBroadcast = broadcasts[0] ?? null
+  const hasUnseenBroadcast = latestBroadcast !== null && latestBroadcast.id !== lastSeenBroadcastId
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [messages])
 
-  const sendMessage = useCallback(async () => {
-    const trimmed = input.trim()
+  // 面板一打開就把目前最新的跑馬燈標記成「已看過」，收合按鈕上的提示燈才會消失。
+  // 依賴 id（原始值）而不是整個物件——broadcasts 陣列每次輪詢都會是新的參照，
+  // 用物件本身當依賴會導致這個 effect 每次輪詢都重跑。
+  const latestBroadcastId = latestBroadcast?.id ?? null
+  useEffect(() => {
+    if (isOpen && latestBroadcastId) {
+      setLastSeenBroadcastId(latestBroadcastId)
+    }
+  }, [isOpen, latestBroadcastId])
+
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const trimmed = (overrideText ?? input).trim()
     if (!trimmed || isStreaming) return
 
     const nextMessages: ChatMessage[] = [...messages, { role: "user", content: trimmed }]
@@ -81,6 +118,16 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
     }
   }, [input, isStreaming, messages, contextSymbol])
 
+  // 點擊跑馬燈：打開面板、直接把這則0-token提醒送進LLM觸發深度分析（按需計費）。
+  const handleBroadcastClick = useCallback(
+    (item: AssistantBroadcastItem) => {
+      setLastSeenBroadcastId(item.id)
+      setIsOpen(true)
+      sendMessage(item.message)
+    },
+    [sendMessage],
+  )
+
   return (
     <>
       {!isOpen && (
@@ -91,6 +138,15 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
           aria-label="開啟 AI 交易軍師助理"
         >
           <MessageCircle className="size-6" aria-hidden="true" />
+          {hasUnseenBroadcast && (
+            <span
+              className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-amber-400 ring-2 ring-background"
+              aria-hidden="true"
+            >
+              <span className="absolute inline-flex size-4 animate-ping rounded-full bg-amber-400 opacity-75" />
+              <span className="relative size-2 rounded-full bg-amber-950" />
+            </span>
+          )}
         </button>
       )}
 
@@ -108,13 +164,23 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
             </div>
             <button
               type="button"
-              onClick={() => setIsOpen(false)}
+              onClick={() => {
+                setIsOpen(false)
+              }}
               className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
               aria-label="收合對話框"
             >
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
+
+          {latestBroadcast && (
+            <BroadcastTicker
+              item={latestBroadcast}
+              disabled={isStreaming}
+              onClick={() => handleBroadcastClick(latestBroadcast)}
+            />
+          )}
 
           <div ref={scrollRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
             {messages.length === 0 && (
@@ -172,6 +238,36 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
         </div>
       )}
     </>
+  )
+}
+
+// 💬 AI副官0-token戰況跑馬燈：橫向捲動顯示最新一則事件（迷因當沖新訊號/
+// 期權大單），點擊直接把這句話送進LLM觸發真正的深度分析（按需計費）。這裡
+// 顯示的文字本身完全不消耗API額度，是後端純字串模板組合出來的。
+function BroadcastTicker({
+  item,
+  disabled,
+  onClick,
+}: {
+  item: AssistantBroadcastItem
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title="點擊觸發 AI 深度分析"
+      className="flex w-full items-center gap-2 overflow-hidden border-b border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-left transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <Radio className="size-3.5 shrink-0 animate-pulse text-amber-400" aria-hidden="true" />
+      <span className="relative flex-1 overflow-hidden whitespace-nowrap">
+        <span className="animate-broadcast-marquee inline-block font-mono text-xs font-semibold text-amber-400">
+          {item.message}
+        </span>
+      </span>
+    </button>
   )
 }
 

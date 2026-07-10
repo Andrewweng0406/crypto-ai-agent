@@ -917,6 +917,44 @@ export function adaptMemeTradeHistory(raw: BackendMemeTradeHistoryResponse): {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 💬 AI副官0-token戰況跑馬燈：純字串模板（後端組合，不是LLM輸出），觸發源是
+// 迷因當沖新訊號跟期權大單。點擊跑馬燈才會把訊息送進 /api/chat 真的觸發LLM。
+// ---------------------------------------------------------------------------
+
+export type AssistantBroadcastKind = "meme_trade" | "whale_sweep"
+
+export interface BackendAssistantBroadcastItem {
+  id: string
+  message: string
+  symbol: string
+  kind: AssistantBroadcastKind
+  triggered_at: string
+}
+
+export interface BackendAssistantBroadcastResponse {
+  items: BackendAssistantBroadcastItem[]
+  updated_at: string | null
+}
+
+export interface AssistantBroadcastItem {
+  id: string
+  message: string
+  symbol: string
+  kind: AssistantBroadcastKind
+  triggeredAt: string
+}
+
+export function adaptAssistantBroadcasts(raw: BackendAssistantBroadcastResponse): AssistantBroadcastItem[] {
+  return raw.items.map((item) => ({
+    id: item.id,
+    message: item.message,
+    symbol: item.symbol,
+    kind: item.kind,
+    triggeredAt: item.triggered_at,
+  }))
+}
+
 export function formatCompactUsd(value: number): string {
   // 例："$1.24M" / "$850K"，給 GEX 數值/大單權利金這種大數字用，避免顯示一長串0
   const sign = value < 0 ? "-" : ""

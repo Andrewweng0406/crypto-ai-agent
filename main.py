@@ -69,6 +69,7 @@ import logging
 import math
 import os
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, time as dt_time, timezone
@@ -194,6 +195,16 @@ MEME_TRADE_RISK_REWARD_RATIO = 2.0      # 跟回測一致：盈虧比 2:1
 MEME_TRADE_TICKER_INTERVAL_SECONDS = 5  # 現價刷新頻率（秒），驅動TP/SL監控
 MEME_TRADE_SCAN_INTERVAL_SECONDS = 300  # K線+訊號偵測頻率（秒）：1H線沒必要每5秒重算一次
 MEME_TRADE_HISTORY_MAX_LEN = 30
+
+# --- 💬 AI副官 0-Token 戰況跑馬燈（獨立模塊）---
+# 純字串模板組合、完全不呼叫LLM，觸發源目前只有「迷因當沖新訊號」跟「期權
+# 大單」這兩個已經有真實資料管道的事件；「重大爆倉事件」暫不包含在內——
+# liquidation_listener.py 目前只是純本機腳本，寫進本機SQLite，從來沒有接過
+# 雲端，main.py 沒有任何管道知道爆倉發生了，要先幫它加一條跟 whale sweep
+# 同樣做法的回傳橋才能把這個觸發源接進來，不在這次改動範圍內。
+# 使用者點擊前端跑馬燈才會把這則訊息送進 /api/chat 真的觸發LLM深度分析，
+# 這裡的推播本身不消耗任何 API 額度。
+ASSISTANT_BROADCAST_MAX_LEN = 20
 
 # --- 市場注意力訊號（迷因雷達的「多空共振」濾網用）---
 # ⚠️ 誠實聲明：這不是 X (Twitter) 討論度本身。官方 X API 免費額度低到無法拿來做
@@ -795,6 +806,21 @@ class MemeTradeHistoryResponse(BaseModel):
     stats: MemeTradeHistoryStats
 
 
+class AssistantBroadcastItem(BaseModel):
+    """AI副官0-token戰況跑馬燈：純字串模板組合，不是LLM輸出，見 push_assistant_broadcast 說明。"""
+
+    id: str
+    message: str
+    symbol: str
+    kind: Literal["meme_trade", "whale_sweep"]
+    triggered_at: str
+
+
+class AssistantBroadcastResponse(BaseModel):
+    items: List[AssistantBroadcastItem]
+    updated_at: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # 3. 全域狀態（背景任務寫入，API 讀取）
 # ---------------------------------------------------------------------------
@@ -939,6 +965,9 @@ class AppState:
         # 只有 MEME_TRADE_SYMBOLS 這兩檔會有 state，其餘迷因雷達候選幣不會出現在這裡）
         self.meme_trade_states: Dict[str, MemeTradeState] = {}
         self.meme_trade_history: Deque[dict] = deque(maxlen=MEME_TRADE_HISTORY_MAX_LEN)
+
+        # 💬 AI副官0-token戰況跑馬燈（獨立狀態，純字串模板，見常數定義處說明）
+        self.assistant_broadcasts: Deque[dict] = deque(maxlen=ASSISTANT_BROADCAST_MAX_LEN)
 
         # AI 智能投研 Agent（獨立狀態，跟上面所有模塊完全分開，只在偵測到共振時
         # 才會去「讀」其他模塊的 open_signal，不會反過來被其他模塊碰）
@@ -2110,6 +2139,24 @@ def build_meme_trade_open_signal(display_name: str, ticker_symbol: str, side: st
     }
 
 
+async def push_assistant_broadcast(message: str, symbol: str, kind: Literal["meme_trade", "whale_sweep"]) -> None:
+    """
+    AI副官0-token戰況跑馬燈：純字串模板組合（呼叫端已經把數字準備好，這裡只是
+    appendleft），完全不呼叫LLM，不消耗任何API額度。跟 news_agent 的LLM情緒
+    分析是徹底不同的東西——這裡只把已經結構化好的事件包成一句提醒，前端使用者
+    點擊跑馬燈之後才會把這句話送進 /api/chat 真的觸發LLM深度分析（按需計費）。
+    """
+    record = {
+        "id": str(uuid.uuid4()),
+        "message": message,
+        "symbol": symbol,
+        "kind": kind,
+        "triggered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    async with state.lock:
+        state.assistant_broadcasts.appendleft(record)
+
+
 async def scan_meme_trade_symbol(exchange_pool: dict, display_name: str, ticker_symbol: str) -> None:
     """
     單一迷因幣的1H爆量當沖偵測：跟回測的 signals_meme_volume_spike 完全一致——
@@ -2186,6 +2233,14 @@ async def scan_meme_trade_symbol(exchange_pool: dict, display_name: str, ticker_
             f"進場：{opened_signal['entry_price']:.6f}\n"
             f"停利：{opened_signal['take_profit']:.6f} ／ 停損：{opened_signal['stop_loss']:.6f}\n"
             f"槓桿：{opened_signal['leverage']}x（180天回測驗證：樣本數已達統計門檻，PF>1.3）"
+        )
+
+        volume_multiple = float(last["volume"]) / last_avg_volume if last_avg_volume else 0.0
+        side_label = "多頭" if side == "Long" else "空頭"
+        await push_assistant_broadcast(
+            f"⚠️ 老哥注意！{display_name} 過去1小時成交量飆升 {volume_multiple:.1f} 倍，"
+            f"已觸發{side_label}當沖訊號 @ ${entry_price:.6f}，要不要看一下線圖？",
+            display_name, "meme_trade",
         )
 
 
@@ -3319,6 +3374,7 @@ def save_state_snapshot() -> None:
                 if s.open_signal is not None
             },
             "meme_trade_history": list(state.meme_trade_history),
+            "assistant_broadcasts": list(state.assistant_broadcasts),
         }
         os.makedirs(LOG_DIR, exist_ok=True)
         tmp_path = STATE_SNAPSHOT_PATH + ".tmp"
@@ -3407,6 +3463,7 @@ def load_state_snapshot() -> None:
             mt_state.last_candle_timestamp = data.get("last_candle_timestamp")
 
         state.meme_trade_history.extend(snapshot.get("meme_trade_history", []))
+        state.assistant_broadcasts.extend(snapshot.get("assistant_broadcasts", []))
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
         restored_us_stock_positions = sum(
@@ -3839,6 +3896,15 @@ async def ingest_whale_sweep(
             state.whale_sweep_feed.appendleft(record)
         state.moomoo_last_seen_monotonic = time.monotonic()
         moomoo_online = state.moomoo_online
+
+    if not is_duplicate:
+        side_label = {"buy": "偏多掃貨", "sell": "偏空掃貨", None: "方向不明"}[item.side]
+        await push_assistant_broadcast(
+            f"🐳 老哥注意！{item.symbol} 出現期權大單，{item.option_type.upper()} "
+            f"${item.strike:.2f} 履約價，權利金 ${item.premium_usd:,.0f}，{side_label}，要不要看一下？",
+            item.symbol, "whale_sweep",
+        )
+
     return WhaleSweepIngestResponse(accepted=not is_duplicate, moomoo_online=moomoo_online)
 
 
@@ -4087,6 +4153,19 @@ async def get_meme_trade_history() -> MemeTradeHistoryResponse:
             win_rate_pct=round(win_rate, 2),
         ),
     )
+
+
+@app.get("/api/ai-agent/broadcast", response_model=AssistantBroadcastResponse)
+async def get_assistant_broadcast() -> AssistantBroadcastResponse:
+    """
+    💬 AI副官0-token戰況跑馬燈：純字串模板組合，不呼叫LLM，觸發源見
+    push_assistant_broadcast 呼叫點（迷因當沖新訊號、期權大單）。前端使用者
+    點擊這則訊息後才會真的把它送進 /api/chat 觸發LLM深度分析，這裡的推播
+    本身不消耗任何API額度，純粹是「提醒」而不是「分析」。
+    """
+    async with state.lock:
+        items = [AssistantBroadcastItem(**record) for record in state.assistant_broadcasts]
+    return AssistantBroadcastResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
 @app.get("/api/ai-agent/news", response_model=NewsAgentResponse)

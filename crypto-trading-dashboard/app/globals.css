@@ -145,3 +145,25 @@
     opacity: 0.45;
   }
 }
+
+/* 💬 AI副官戰況跑馬燈：文字從右往左橫向捲動，經典跑馬燈效果，用在 Chatbot
+   面板頂部提醒有新的0-token事件（迷因當沖新訊號/期權大單）。 */
+@keyframes broadcast-marquee {
+  0% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+.animate-broadcast-marquee {
+  animation: broadcast-marquee 14s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-broadcast-marquee {
+    animation: none;
+    transform: none;
+  }
+}
