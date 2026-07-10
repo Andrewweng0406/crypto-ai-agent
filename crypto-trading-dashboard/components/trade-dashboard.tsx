@@ -5,6 +5,7 @@ import useSWR from "swr"
 import { Activity, AlertTriangle, Radar, Zap } from "lucide-react"
 import {
   adaptHistory,
+  adaptLiquidationWalls,
   adaptMemeAlerts,
   adaptMemeTradeHistory,
   adaptMemeTradeList,
@@ -20,6 +21,7 @@ import {
   formatPrice,
   formatTime,
   type BackendHistoryResponse,
+  type BackendLiquidationWallsResponse,
   type BackendMemeRadarResponse,
   type BackendMemeTradeHistoryResponse,
   type BackendMemeTradeListResponse,
@@ -49,6 +51,8 @@ import { USStockHistory } from "@/components/us-stock-history"
 import { NewsRadar } from "@/components/news-radar"
 import { SqueezeFeed } from "@/components/squeeze-feed"
 import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
+import { BacktestSandboxPanel } from "@/components/backtest-sandbox-panel"
+import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
 
 const fetcher = (url: string) =>
@@ -60,7 +64,7 @@ const fetcher = (url: string) =>
 
 // 迷因雷達、迷因當沖、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣
 // 不同的資料形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics"
+type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics" | "backtest"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "major", label: "主流幣" },
@@ -70,25 +74,28 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "usStock", label: "美股 ORB" },
   { key: "newsAgent", label: "AI 智能輿情雷達" },
   { key: "optionsAnalytics", label: "📊 期權分析" },
+  { key: "backtest", label: "🚀 回測沙盒" },
 ]
 
 export function TradeDashboard() {
   const [mode, setMode] = useState<TabKey>("major")
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [newsCategory, setNewsCategory] = useState<NewsCategory | "all">("all")
+  const [liquidationSymbol, setLiquidationSymbol] = useState<string>("BTC")
 
   const isMemeMode = mode === "meme"
   const isMemeTradeMode = mode === "memeTrade"
   const isUSStockMode = mode === "usStock"
   const isNewsAgentMode = mode === "newsAgent"
   const isOptionsMode = mode === "optionsAnalytics"
+  const isBacktestMode = mode === "backtest"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode
+    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode || isBacktestMode
       ? null
       : `/api/signals?universe=${mode}`,
     fetcher,
@@ -169,6 +176,17 @@ export function TradeDashboard() {
   } = useSWR<BackendSqueezeFeedResponse>(isSqueezeFeedMode ? "/api/squeeze-feed" : null, fetcher, {
     refreshInterval: 20000,
   })
+
+  const { data: rawLiquidationWalls } = useSWR<BackendLiquidationWallsResponse>(
+    mode === "scan" ? "/api/market/liquidation-walls" : null,
+    fetcher,
+    { refreshInterval: 30000 },
+  )
+  const liquidationWalls = useMemo(
+    () => (rawLiquidationWalls ? adaptLiquidationWalls(rawLiquidationWalls) : []),
+    [rawLiquidationWalls],
+  )
+  const selectedLiquidationWall = liquidationWalls.find((w) => w.symbol === liquidationSymbol) ?? null
 
   const signals = useMemo(() => (rawSignals ? adaptSignalList(rawSignals) : []), [rawSignals])
   const memeAlerts = useMemo(() => (rawMemes ? adaptMemeAlerts(rawMemes) : []), [rawMemes])
@@ -253,39 +271,45 @@ export function TradeDashboard() {
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedMemeTrade = memeTradeCoins.find((c) => c.symbol === selectedSymbol) ?? null
 
-  const activeError = isMemeMode
-    ? memesError
-    : isMemeTradeMode
-      ? memeTradeError
-      : isUSStockMode
-        ? usStocksError
-        : isNewsAgentMode
-          ? newsError
-          : isOptionsMode
-            ? optionsGexError
-            : signalsError
-  const activeLoading = isMemeMode
-    ? memesLoading
-    : isMemeTradeMode
-      ? memeTradeLoading
-      : isUSStockMode
-        ? usStocksLoading
-        : isNewsAgentMode
-          ? newsLoading
-          : isOptionsMode
-            ? optionsGexLoading
-            : signalsLoading
-  const isConnected = isMemeMode
-    ? !memesError && !!rawMemes
-    : isMemeTradeMode
-      ? !memeTradeError && !!rawMemeTrade
-      : isUSStockMode
-        ? !usStocksError && !!rawUSStocks
-        : isNewsAgentMode
-          ? !newsError && !!rawNews
-          : isOptionsMode
-            ? !optionsGexError && !!rawOptionsGex
-            : !signalsError && !!rawSignals
+  const activeError = isBacktestMode
+    ? undefined
+    : isMemeMode
+      ? memesError
+      : isMemeTradeMode
+        ? memeTradeError
+        : isUSStockMode
+          ? usStocksError
+          : isNewsAgentMode
+            ? newsError
+            : isOptionsMode
+              ? optionsGexError
+              : signalsError
+  const activeLoading = isBacktestMode
+    ? false
+    : isMemeMode
+      ? memesLoading
+      : isMemeTradeMode
+        ? memeTradeLoading
+        : isUSStockMode
+          ? usStocksLoading
+          : isNewsAgentMode
+            ? newsLoading
+            : isOptionsMode
+              ? optionsGexLoading
+              : signalsLoading
+  const isConnected = isBacktestMode
+    ? true
+    : isMemeMode
+      ? !memesError && !!rawMemes
+      : isMemeTradeMode
+        ? !memeTradeError && !!rawMemeTrade
+        : isUSStockMode
+          ? !usStocksError && !!rawUSStocks
+          : isNewsAgentMode
+            ? !newsError && !!rawNews
+            : isOptionsMode
+              ? !optionsGexError && !!rawOptionsGex
+              : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -525,6 +549,15 @@ export function TradeDashboard() {
             燈號代表本機監聽目前是否在線，離線時 GEX 主面板不受影響、只是大單清單不會有新資料。
           </p>
         </>
+      ) : isBacktestMode ? (
+        <>
+          <BacktestSandboxPanel />
+          <p className="text-center text-xs text-muted-foreground">
+            回測沙盒為獨立功能：真實抓取歷史K線並模擬策略進出場，
+            <strong className="text-foreground">不是即時交易訊號</strong>
+            ，樣本數不足15筆時請勿把結果當成已驗證的勝率。公開端點有IP限流（15次/小時）。
+          </p>
+        </>
       ) : (
         <>
           {mode === "major" ? (
@@ -539,6 +572,29 @@ export function TradeDashboard() {
                 isLoading={signalsLoading}
               />
               <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
+
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-mono text-sm font-semibold text-muted-foreground">💥 幣圈爆倉密度清算牆</h2>
+                  <div className="flex gap-1 rounded-full border border-border/60 bg-card p-1">
+                    {liquidationWalls.map((w) => (
+                      <button
+                        key={w.symbol}
+                        type="button"
+                        onClick={() => setLiquidationSymbol(w.symbol)}
+                        className={`rounded-full px-3 py-1 font-mono text-xs font-semibold transition-colors ${
+                          liquidationSymbol === w.symbol
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {w.symbol}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {selectedLiquidationWall && <LiquidationHeatmapChart data={selectedLiquidationWall} />}
+              </div>
             </>
           )}
 

@@ -201,7 +201,9 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
               key={i}
               x={x(strike)}
               y={height - padBottom + 20}
-              textAnchor="middle"
+              // 頭尾兩個刻度往內對齊，避免寬數字用置中錨點時被容器的
+              // overflow-hidden切掉左/右半邊文字（見清算牆同一段註解）。
+              textAnchor={i === 0 ? "start" : i === axisTicks.length - 1 ? "end" : "middle"}
               className="font-mono"
               fontSize="10"
               fill="var(--muted-foreground)"

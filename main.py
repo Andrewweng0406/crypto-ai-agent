@@ -81,12 +81,13 @@ import aiohttp
 import ccxt.async_support as ccxt
 import feedparser
 import pandas as pd
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 import gex_engine
+import yfinance as yf
 import yfinance_client
 
 # ---------------------------------------------------------------------------
@@ -336,6 +337,12 @@ OPTIONS_WHALE_SWEEP_FEED_MAX_LEN = 30
 WHALE_SWEEP_API_KEY = os.environ.get("WHALE_SWEEP_API_KEY", "").strip() or None
 MOOMOO_ONLINE_TIMEOUT_SECONDS = 180  # 超過這麼久沒收到本機心跳（任何一次POST都算），前端燈號轉待命
 WHALE_SWEEP_DEDUP_WINDOW_SECONDS = 600  # 本機腳本重啟時 OpenD 可能重送cache tick，10分鐘內視為同一筆交易的重複回報
+
+# --- 💥 幣圈爆倉密度清算牆（獨立模塊，本機 liquidation_listener.py 主動回傳）---
+# 跟 whale sweep 共用同一組 WHALE_SWEEP_API_KEY（同一個「本機工具回傳雲端」信任
+# 邊界，不另外多管理一組密鑰）。本機端已經把原始清算單彙總成價格區間快照才送
+# 過來，這裡收到的就是最終要顯示的資料，不需要再做任何聚合。
+LIQUIDATION_WALL_SYMBOLS = ["BTC", "ETH", "SOL"]  # 跟正式站台主流幣分頁一致
 
 # --- X（Twitter）自動發文：預留接口，目前未啟用 ---
 # 之後申請到 X Developer 帳號、把這四個環境變數設好，post_to_x() 才會真的動作；
@@ -657,6 +664,36 @@ class WhaleSweepIngestItem(BaseModel):
 class WhaleSweepIngestResponse(BaseModel):
     accepted: bool
     moomoo_online: bool
+
+
+class LiquidationBucketIngest(BaseModel):
+    price_bucket: float
+    net_liquidation_usd: float  # 正值=空頭爆倉(綠，通常在現價上方)，負值=多頭爆倉(紅，通常在現價下方)
+
+
+class LiquidationIngestRequest(BaseModel):
+    """本機 liquidation_listener.py 主動 POST 回傳雲端的清算密度快照——整份彙總後的桶清單，不是逐筆原始事件。"""
+
+    symbol: str
+    spot_price: float
+    buckets: List[LiquidationBucketIngest]
+
+
+class LiquidationIngestResponse(BaseModel):
+    accepted: bool
+
+
+class LiquidationWallData(BaseModel):
+    symbol: str
+    has_data: bool
+    spot_price: Optional[float] = None
+    points: List[LiquidationBucketIngest] = []
+    updated_at: Optional[str] = None
+
+
+class LiquidationWallsResponse(BaseModel):
+    underlyings: List[LiquidationWallData]
+    updated_at: Optional[str] = None
 
 
 class CandleResponse(BaseModel):
@@ -985,6 +1022,10 @@ class AppState:
         # 這裡只記錄「最近一次收到本機POST的時間」，超過 MOOMOO_ONLINE_TIMEOUT_SECONDS
         # 沒收到就視為離線（本機電腦關機/OpenD斷線），前端燈號轉待命、不會卡住主面板。
         self.moomoo_last_seen_monotonic: Optional[float] = None
+
+        # 💥 爆倉密度清算牆（獨立狀態；本機 liquidation_listener.py 主動回傳彙總後
+        # 的快照，這裡只是存最新一份，不是逐筆累積——累積本身已經在本機SQLite完成）
+        self.liquidation_walls: Dict[str, dict] = {}
 
     def get_options_state(self, symbol: str) -> OptionsState:
         if symbol not in self.options_states:
@@ -3375,6 +3416,7 @@ def save_state_snapshot() -> None:
             },
             "meme_trade_history": list(state.meme_trade_history),
             "assistant_broadcasts": list(state.assistant_broadcasts),
+            "liquidation_walls": state.liquidation_walls,
         }
         os.makedirs(LOG_DIR, exist_ok=True)
         tmp_path = STATE_SNAPSHOT_PATH + ".tmp"
@@ -3464,6 +3506,7 @@ def load_state_snapshot() -> None:
 
         state.meme_trade_history.extend(snapshot.get("meme_trade_history", []))
         state.assistant_broadcasts.extend(snapshot.get("assistant_broadcasts", []))
+        state.liquidation_walls.update(snapshot.get("liquidation_walls", {}))
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
         restored_us_stock_positions = sum(
@@ -3481,6 +3524,392 @@ def load_state_snapshot() -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("讀取狀態快照失敗，將從全新狀態啟動：%s", exc)
+
+
+# ---------------------------------------------------------------------------
+# 8.5 網頁端回測沙盒（獨立模塊，公開端點，靠IP限流防護）
+# ---------------------------------------------------------------------------
+# 這裡的模擬引擎是把本機 backtest_optimizer.py / backtest_us_stock_orb.py
+# 已經驗證過的邏輯移植進來（不是 import，因為那兩支腳本刻意維持 Untracked、
+# 不會被部署到 Railway，main.py 要能在正式環境跑，邏輯必須是它自己的）。
+# 只支援三個有真實歷史資料源的策略；「gamma_squeeze」這種需要歷史期權OI/
+# 大單tick的策略不提供——那份歷史資料在任何地方都不存在，硬做出來會是編造
+# 的假回測，見 backtest_optimizer.py 開頭的誠實聲明（同一個結論這裡再次適用）。
+
+BACKTEST_CANDLES_PER_FETCH = 300
+BACKTEST_CRYPTO_FEE_PCT_PER_SIDE = 0.05  # 跟 backtest_htf.py／backtest_optimizer.py 同樣假設：BingX taker費率概估
+BACKTEST_MIN_TRADES_FOR_CONFIDENCE = 15
+BACKTEST_MAX_DAYS_RANGE = 180  # 上限只是防呆用；實際能不能拿到這麼多天由資料源自己的限制決定（見下）
+BACKTEST_YF_MAX_DAYS = 60  # yfinance 15分鐘K線的真實硬上限，超過會被交易所API拒絕（見晚間backtest_optimizer.py實測）
+
+# 公開端點限流：跟 Next.js chatbot 那組同樣的「單一執行個體記憶體內計數」精神，
+# 一樣不是跨執行個體精確全域限流，但這是後端唯一一個會觸發大量外部交易所/
+# yfinance API呼叫的公開端點，沒有防護的話可以被無限次刷爆外部API額度。
+BACKTEST_RATE_LIMIT_MAX_REQUESTS = 15
+BACKTEST_RATE_LIMIT_WINDOW_SECONDS = 3600
+_backtest_rate_limit_log: Dict[str, List[float]] = {}
+
+
+def _backtest_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _backtest_is_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    timestamps = [t for t in _backtest_rate_limit_log.get(ip, []) if now - t < BACKTEST_RATE_LIMIT_WINDOW_SECONDS]
+    if len(timestamps) >= BACKTEST_RATE_LIMIT_MAX_REQUESTS:
+        _backtest_rate_limit_log[ip] = timestamps
+        return True
+    timestamps.append(now)
+    _backtest_rate_limit_log[ip] = timestamps
+    return False
+
+
+class BacktestRequest(BaseModel):
+    symbol: str
+    strategy_name: Literal["crypto_donchian_1h", "meme_volume_spike", "us_stock_orb"]
+    days_range: int = 30
+
+
+class BacktestResponse(BaseModel):
+    symbol: str
+    strategy_name: str
+    win_rate: float
+    profit_loss_ratio: float  # 賺賠比：平均獲利% / |平均虧損%|
+    profit_factor: float      # 獲利因子：總獲利% / |總虧損%|（跟賺賠比是不同概念，兩個都給）
+    mdd: float                # 最大回撤（權益曲線峰值到谷值的最大跌幅，單位%，負值）
+    total_trades: int
+    equity_curve: List[float]
+    sample_sufficient: bool   # 筆數 < BACKTEST_MIN_TRADES_FOR_CONFIDENCE 時為 False，前端必須顯示警告
+    days_range_requested: int
+    days_range_used: int      # 資料源實際能提供的天數（yfinance會被夾到60天），可能小於 requested
+    data_source: str
+
+
+async def _backtest_fetch_crypto_history(symbol: str, days: int, timeframe: str) -> pd.DataFrame:
+    """分頁抓取加密貨幣歷史K線，邏輯跟 backtest_optimizer.py 的 fetch_full_history 完全一致，
+    但用正式站台已經連線好的 exchange_pool_ref（跟 /api/candles 同樣的共用連線池），
+    不額外開一條新的交易所連線。"""
+    if not exchange_pool_ref:
+        raise HTTPException(status_code=503, detail="交易所連線尚未就緒，請稍後再試")
+
+    last_error: Optional[Exception] = None
+    for name in _exchange_order():
+        exchange = exchange_pool_ref[name]
+        try:
+            now_ms = exchange.milliseconds()
+            since = now_ms - days * 24 * 60 * 60 * 1000
+            all_candles: list = []
+            while True:
+                batch = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=BACKTEST_CANDLES_PER_FETCH)
+                if not batch:
+                    break
+                all_candles.extend(batch)
+                last_ts = batch[-1][0]
+                if last_ts <= since:
+                    break
+                since = last_ts + 1
+                if len(batch) < BACKTEST_CANDLES_PER_FETCH:
+                    break
+
+            df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            return df.drop_duplicates(subset="timestamp").sort_values("timestamp").reset_index(drop=True)
+        except Exception as exc:  # noqa: BLE001 - 交易所來源錯誤型別眾多，統一捕捉後續嘗試備援
+            last_error = exc
+            continue
+
+    raise HTTPException(status_code=502, detail=f"抓取 {symbol} 歷史K線失敗（所有交易所皆失敗）：{last_error}")
+
+
+def _backtest_fetch_yf_ohlcv(ticker: str, days: int) -> pd.DataFrame:
+    """
+    美股15分鐘K線，yfinance免費版硬上限60天（見 BACKTEST_YF_MAX_DAYS 說明，
+    超過會被直接夾住，不會安靜地少抓資料卻讓人以為抓到了要求的天數）。
+    yfinance 是同步阻塞呼叫，呼叫端須用 asyncio.to_thread 丟到執行緒池跑。
+    """
+    effective_days = min(days, BACKTEST_YF_MAX_DAYS)
+    raw = yf.Ticker(ticker).history(period=f"{effective_days}d", interval="15m")
+    if raw.empty:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    return pd.DataFrame({
+        "timestamp": (raw.index.view("int64") // 10**6),
+        "open": raw["Open"].values,
+        "high": raw["High"].values,
+        "low": raw["Low"].values,
+        "close": raw["Close"].values,
+        "volume": raw["Volume"].values,
+    }).reset_index(drop=True)
+
+
+def _backtest_add_trend_variant(df: pd.DataFrame, fast: int, slow: int, use_ema: bool) -> pd.DataFrame:
+    df = df.copy()
+    if use_ema:
+        df["ma_fast"] = df["close"].ewm(span=fast, adjust=False).mean()
+        df["ma_slow"] = df["close"].ewm(span=slow, adjust=False).mean()
+    else:
+        df["ma_fast"] = df["close"].rolling(fast).mean()
+        df["ma_slow"] = df["close"].rolling(slow).mean()
+    return df
+
+
+def _backtest_signals_donchian_1h(df: pd.DataFrame) -> pd.DataFrame:
+    """1H唐奇安20+EMA20/60+RVOL≥2.0，跟今晚假設1驗證過的組合完全一致（OI條件因歷史資料不存在而跳過）。"""
+    df = df.copy()
+    df["atr"] = _compute_atr_series(df)
+    df = _backtest_add_trend_variant(df, fast=20, slow=60, use_ema=True)
+
+    donchian_upper = df["high"].rolling(DONCHIAN_PERIOD).max().shift(1)
+    donchian_lower = df["low"].rolling(DONCHIAN_PERIOD).min().shift(1)
+    avg_volume = df["volume"].rolling(20).mean()
+    rvol = df["volume"] / avg_volume
+    volume_confirmed = rvol >= 2.0
+
+    df["long_signal"] = (df["close"] > donchian_upper) & volume_confirmed & (df["ma_fast"] > df["ma_slow"])
+    df["short_signal"] = (df["close"] < donchian_lower) & volume_confirmed & (df["ma_fast"] < df["ma_slow"])
+    return df
+
+
+def _backtest_signals_meme_volume_spike(df: pd.DataFrame) -> pd.DataFrame:
+    """跟正式上線的迷因當沖策略（scan_meme_trade_symbol）同一套判定：成交量≥24根均量3倍+方向。"""
+    df = df.copy()
+    df["atr"] = _compute_atr_series(df)
+    avg_volume = df["volume"].rolling(MEME_VOLUME_LOOKBACK).mean()
+    spike = df["volume"] > avg_volume * MEME_TRADE_VOLUME_SPIKE_MULT
+    is_pump = df["close"] > df["open"]
+    df["long_signal"] = spike & is_pump
+    df["short_signal"] = spike & ~is_pump
+    return df
+
+
+def _backtest_simulate_htf(df: pd.DataFrame, atr_sl_mult: float, rr: float, start_idx: int) -> List[dict]:
+    """跟 backtest_optimizer.py 的 simulate_htf 完全一致的walk-forward模擬引擎。"""
+    trades: List[dict] = []
+    open_position: Optional[dict] = None
+
+    for i in range(start_idx, len(df)):
+        candle = df.iloc[i]
+
+        if open_position is not None:
+            side = open_position["side"]
+            tp, sl = open_position["take_profit"], open_position["stop_loss"]
+            hit_tp = candle["high"] >= tp if side == "Long" else candle["low"] <= tp
+            hit_sl = candle["low"] <= sl if side == "Long" else candle["high"] >= sl
+
+            if hit_tp or hit_sl:
+                result = "LOSS" if hit_sl else "WIN"
+                exit_price = sl if hit_sl else tp
+                raw_pnl_pct = (exit_price - open_position["entry_price"]) / open_position["entry_price"] * 100
+                if side == "Short":
+                    raw_pnl_pct = -raw_pnl_pct
+                pnl_pct = raw_pnl_pct * open_position["leverage"]
+                fee_cost_pct = 2 * BACKTEST_CRYPTO_FEE_PCT_PER_SIDE * open_position["leverage"]
+                trades.append({
+                    "result": result,
+                    "pnl_pct_after_fee": pnl_pct - fee_cost_pct,
+                    "entry_timestamp": open_position["entry_timestamp"],
+                })
+                open_position = None
+            continue
+
+        if bool(candle["long_signal"]) or bool(candle["short_signal"]):
+            side = "Long" if candle["long_signal"] else "Short"
+            entry_price = float(candle["close"])
+            atr = float(candle["atr"])
+            sl_distance = atr * atr_sl_mult
+            tp_distance = sl_distance * rr
+
+            if side == "Long":
+                stop_loss, take_profit = entry_price - sl_distance, entry_price + tp_distance
+            else:
+                stop_loss, take_profit = entry_price + sl_distance, entry_price - tp_distance
+
+            stop_loss_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price > 0 else float("inf")
+            if stop_loss_pct > MAX_SANE_STOP_LOSS_PCT:
+                continue  # 同主流幣邏輯：停損距離本身已經不正常暴走，跳過這個訊號
+
+            leverage = calculate_leverage(stop_loss_pct)
+            open_position = {
+                "side": side, "entry_price": entry_price,
+                "take_profit": take_profit, "stop_loss": stop_loss, "leverage": leverage,
+                "entry_timestamp": int(candle["timestamp"]),
+            }
+
+    return trades
+
+
+def _backtest_compute_regime_series(regime_df: pd.DataFrame) -> pd.DataFrame:
+    """跟 main.py 的 refresh_us_market_regime 完全同樣的算法，逐根計算（見 backtest_us_stock_orb.py 同名函式）。"""
+    df = regime_df.copy()
+    ma_fast = df["close"].rolling(9).mean()
+    ma_slow = df["close"].rolling(21).mean()
+    prev_high = df["high"].shift(1)
+    prev_low = df["low"].shift(1)
+
+    bullish = (ma_fast > ma_slow) | (df["close"] > prev_high)
+    bearish = (ma_fast < ma_slow) | (df["close"] < prev_low)
+
+    regime = pd.Series("Neutral", index=df.index)
+    regime[bullish & ~bearish] = "Bullish"
+    regime[bearish & ~bullish] = "Bearish"
+    df["regime"] = regime
+    return df[["timestamp", "regime"]]
+
+
+def _backtest_simulate_us_stock_orb(display_name: str, ticker_symbol: str, df: pd.DataFrame, regime_df: pd.DataFrame) -> List[dict]:
+    """跟 backtest_us_stock_orb.py 的 simulate_symbol 完全一致的ORB模擬邏輯，套用在 yfinance 資料上。"""
+    tz = ZoneInfo(US_MARKET_TZ)
+    df = df.copy()
+    df["et_time"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(tz)
+    df["et_date"] = df["et_time"].dt.date
+    df["et_hm"] = df["et_time"].dt.strftime("%H:%M")
+    df = df.merge(regime_df, on="timestamp", how="left")
+    df["regime"] = df["regime"].fillna("Neutral")
+
+    volume_by_slot: Dict[str, list] = {}
+    for _, row in df.iterrows():
+        volume_by_slot.setdefault(row["et_hm"], []).append((row["et_date"], row["volume"]))
+
+    trades: List[dict] = []
+    dates = sorted(df["et_date"].unique())
+    range_start_hm = ORB_RANGE_START.strftime("%H:%M")
+
+    for d in dates:
+        if d.weekday() >= 5:
+            continue
+
+        day_df = df[df["et_date"] == d].reset_index(drop=True)
+        range_rows = day_df[day_df["et_hm"] == range_start_hm]
+        if range_rows.empty:
+            continue
+
+        opening_high = float(range_rows.iloc[0]["high"])
+        opening_low = float(range_rows.iloc[0]["low"])
+        if opening_high <= opening_low:
+            continue
+
+        breakout_rows = day_df[day_df["et_time"].dt.time > ORB_RANGE_END]
+        if breakout_rows.empty:
+            continue
+
+        position: Optional[dict] = None
+        day_high_so_far = opening_high
+
+        for _, row in breakout_rows.iterrows():
+            day_high_so_far = max(day_high_so_far, float(row["high"]))
+
+            if position is None:
+                slot_history = volume_by_slot.get(row["et_hm"], [])
+                past_volumes = sorted(
+                    [(dd, vv) for dd, vv in slot_history if dd < d and pd.Timestamp(dd).dayofweek < 5],
+                    key=lambda x: x[0],
+                )
+                recent = [v for _, v in past_volumes[-ORB_RVOL_LOOKBACK_DAYS:]]
+                avg_slot_volume = (sum(recent) / len(recent)) if recent else None
+                rvol = (row["volume"] / avg_slot_volume) if avg_slot_volume and avg_slot_volume > 0 else None
+                volume_confirmed = rvol is not None and rvol >= ORB_RVOL_MULT
+
+                long_breakout = row["close"] > opening_high
+                short_breakout = row["close"] < opening_low
+                regime = row["regime"]
+
+                candidate = None
+                if long_breakout and volume_confirmed and regime == "Bullish":
+                    candidate = {"side": "Long", "entry_price": float(row["close"]),
+                                 "opening_high": opening_high, "opening_low": opening_low}
+                elif short_breakout and volume_confirmed and regime == "Bearish":
+                    candidate = {"side": "Short", "entry_price": float(row["close"]),
+                                 "opening_high": opening_high, "opening_low": opening_low,
+                                 "day_high_so_far": day_high_so_far}
+
+                if candidate is not None:
+                    opened = build_us_stock_open_signal(display_name, ticker_symbol, candidate)
+                    position = opened
+                continue
+
+            side = position["side"]
+            tp, sl = position["take_profit"], position["stop_loss"]
+            hit_tp = row["high"] >= tp if side == "Long" else row["low"] <= tp
+            hit_sl = row["low"] <= sl if side == "Long" else row["high"] >= sl
+
+            if hit_sl:
+                trades.append(_backtest_close_orb_trade(position, sl, "LOSS"))
+                position = None
+            elif hit_tp:
+                trades.append(_backtest_close_orb_trade(position, tp, "WIN"))
+                position = None
+
+        if position is not None:
+            last_close = float(day_df.iloc[-1]["close"])
+            raw_pnl = (last_close - position["entry_price"]) / position["entry_price"] * 100
+            if position["side"] == "Short":
+                raw_pnl = -raw_pnl
+            result = "WIN" if raw_pnl >= 0 else "LOSS"
+            trades.append(_backtest_close_orb_trade(position, last_close, result))
+
+    return trades
+
+
+def _backtest_close_orb_trade(position: dict, exit_price: float, result: str) -> dict:
+    side = position["side"]
+    raw_pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"] * 100
+    if side == "Short":
+        raw_pnl_pct = -raw_pnl_pct
+    pnl_pct = raw_pnl_pct * position["leverage"]
+    fee_cost_pct = 2 * BACKTEST_CRYPTO_FEE_PCT_PER_SIDE * position["leverage"]
+    return {"result": result, "pnl_pct_after_fee": pnl_pct - fee_cost_pct}
+
+
+def _backtest_summarize(trades: List[dict]) -> dict:
+    """統一算出勝率/賺賠比/獲利因子/權益曲線/最大回撤。權益曲線是「單筆%直接加總」的簡化模型
+    （不複利），跟系統其他地方回報「期望值%/筆」的方式一致，不是模擬真實帳戶餘額成長。"""
+    if not trades:
+        return {
+            "win_rate": 0.0, "profit_loss_ratio": 0.0, "profit_factor": 0.0,
+            "mdd": 0.0, "total_trades": 0, "equity_curve": [100.0],
+        }
+
+    wins = sum(1 for t in trades if t["result"] == "WIN")
+    win_rate = wins / len(trades) * 100
+
+    win_pnls = [t["pnl_pct_after_fee"] for t in trades if t["pnl_pct_after_fee"] > 0]
+    loss_pnls = [t["pnl_pct_after_fee"] for t in trades if t["pnl_pct_after_fee"] <= 0]
+    gross_win = sum(win_pnls)
+    gross_loss = abs(sum(loss_pnls))
+    avg_win = gross_win / len(win_pnls) if win_pnls else 0.0
+    avg_loss = gross_loss / len(loss_pnls) if loss_pnls else 0.0
+
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+    profit_loss_ratio = (avg_win / avg_loss) if avg_loss > 0 else (float("inf") if avg_win > 0 else 0.0)
+
+    equity_curve = [100.0]
+    for t in trades:
+        equity_curve.append(equity_curve[-1] + t["pnl_pct_after_fee"])
+
+    peak = equity_curve[0]
+    max_drawdown = 0.0
+    for value in equity_curve:
+        peak = max(peak, value)
+        max_drawdown = min(max_drawdown, value - peak)
+
+    # inf 不能塞進 JSON（NaN/Infinity 不是合法JSON值），全勝/全敗的極端情況夾成一個很大但有限的數字
+    def _sanitize(x: float) -> float:
+        if x == float("inf"):
+            return 999.0
+        if x != x:  # NaN
+            return 0.0
+        return x
+
+    return {
+        "win_rate": round(win_rate, 2),
+        "profit_loss_ratio": round(_sanitize(profit_loss_ratio), 2),
+        "profit_factor": round(_sanitize(profit_factor), 2),
+        "mdd": round(max_drawdown, 2),
+        "total_trades": len(trades),
+        "equity_curve": [round(v, 2) for v in equity_curve],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3927,6 +4356,53 @@ async def whale_sweep_heartbeat(x_api_key: Optional[str] = Header(None, alias="X
     return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
 
 
+@app.post("/api/ingest/liquidation", response_model=LiquidationIngestResponse)
+async def ingest_liquidation(
+    item: LiquidationIngestRequest, x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+) -> LiquidationIngestResponse:
+    """
+    本機 liquidation_listener.py 主動回傳雲端的清算密度快照接收端點。跟whale
+    sweep共用同一組 WHALE_SWEEP_API_KEY 驗證。收到的已經是本機端彙總好的價格
+    區間快照（見 liquidation_listener.py 的 compute_liquidation_buckets），
+    這裡直接整份覆蓋掉該標的的舊快照，不是逐筆累加——累積本身在本機SQLite完成。
+    """
+    if WHALE_SWEEP_API_KEY is None or x_api_key != WHALE_SWEEP_API_KEY:
+        raise HTTPException(status_code=401, detail="無效或缺少 X-API-Key")
+
+    symbol = item.symbol.strip().upper()
+    async with state.lock:
+        state.liquidation_walls[symbol] = {
+            "spot_price": item.spot_price,
+            "points": [b.model_dump() for b in item.buckets],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return LiquidationIngestResponse(accepted=True)
+
+
+@app.get("/api/market/liquidation-walls", response_model=LiquidationWallsResponse)
+async def get_liquidation_walls() -> LiquidationWallsResponse:
+    """
+    💥 幣圈爆倉密度清算牆（獨立、實驗性模塊）：資料源自使用者本機執行的
+    liquidation_listener.py（選擇性回傳，見該腳本說明）。has_data=False代表
+    本機還沒回傳過這個標的的快照，不是「這個標的沒有清算」。
+    """
+    async with state.lock:
+        underlyings = []
+        for symbol in LIQUIDATION_WALL_SYMBOLS:
+            data = state.liquidation_walls.get(symbol)
+            if data is None:
+                underlyings.append(LiquidationWallData(symbol=symbol, has_data=False))
+                continue
+            underlyings.append(LiquidationWallData(
+                symbol=symbol,
+                has_data=True,
+                spot_price=data["spot_price"],
+                points=[LiquidationBucketIngest(**p) for p in data["points"]],
+                updated_at=data["updated_at"],
+            ))
+    return LiquidationWallsResponse(underlyings=underlyings, updated_at=datetime.now(timezone.utc).isoformat())
+
+
 @app.get("/api/candles", response_model=CandlesListResponse)
 async def get_candles(symbol: str, limit: int = 60, timeframe: str = TIMEFRAME) -> CandlesListResponse:
     """
@@ -4178,6 +4654,89 @@ async def get_ai_agent_news() -> NewsAgentResponse:
     async with state.lock:
         items = [NewsItemResponse(**item) for item in state.news_items]
     return NewsAgentResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
+
+
+@app.post("/api/backtest", response_model=BacktestResponse)
+async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestResponse:
+    """
+    網頁端回測沙盒：把 backtest_optimizer.py 已經驗證過的邏輯移植進正式站台
+    （見本區塊開頭說明，那支腳本本身刻意不部署，這裡是獨立移植、不是import）。
+
+    公開端點，靠IP限流（15次/小時，跟chatbot同規格）防止被用來刷爆外部交易所/
+    yfinance API額度——這是後端唯一一個公開就會觸發大量外部API呼叫的端點。
+
+    只支援三個真的有歷史資料源的策略：
+      - crypto_donchian_1h／meme_volume_spike：ccxt歷史K線，symbol可傳裸代號
+        （如 "WIF"，自動補成 WIF/USDT:USDT）或完整ccxt符號
+      - us_stock_orb：yfinance 15分鐘K線，symbol傳美股代號（如 "NVDA"），
+        天數會被夾到yfinance的真實上限60天
+
+    「gamma_squeeze」這種需要歷史期權OI/大單tick資料的策略沒有提供——這份歷史
+    資料不存在，做出來會是編造的假回測，不會為了填滿一個下拉選單而這樣做。
+    """
+    client_ip = _backtest_client_ip(request)
+    if _backtest_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {BACKTEST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
+
+    days_range = max(1, min(payload.days_range, BACKTEST_MAX_DAYS_RANGE))
+    symbol_raw = payload.symbol.strip().upper()
+
+    if payload.strategy_name in ("crypto_donchian_1h", "meme_volume_spike"):
+        ccxt_symbol = symbol_raw if "/" in symbol_raw else f"{symbol_raw}/USDT:USDT"
+        # 暖機緩衝：均線/ATR/RVOL都需要額外歷史資料才能算出第一筆有效訊號，
+        # 沒有這個緩衝，回測窗口一開始的訊號會因為指標還是NaN而被跳過，
+        # 跟今晚假設1的MA200暖機bug是同一類問題，這裡直接把修法內建進來。
+        fetch_days = days_range + 10
+        try:
+            raw = await _backtest_fetch_crypto_history(ccxt_symbol, fetch_days, "1h")
+        except HTTPException:
+            raise
+        if raw.empty:
+            raise HTTPException(status_code=502, detail=f"抓不到 {ccxt_symbol} 的歷史K線，請確認代號是否正確")
+
+        days_ago_ms = pd.Timestamp.now(tz="UTC").value // 10**6 - days_range * 24 * 60 * 60 * 1000
+        if payload.strategy_name == "crypto_donchian_1h":
+            signals = _backtest_signals_donchian_1h(raw)
+            atr_sl_mult, rr = ATR_SL_MULTIPLIER, RISK_REWARD_RATIO
+        else:
+            signals = _backtest_signals_meme_volume_spike(raw)
+            atr_sl_mult, rr = MEME_TRADE_ATR_SL_MULTIPLIER, MEME_TRADE_RISK_REWARD_RATIO
+
+        min_len = max(DONCHIAN_PERIOD, MEME_VOLUME_LOOKBACK, ATR_PERIOD, 60) + 2
+        all_trades = _backtest_simulate_htf(signals, atr_sl_mult, rr, min_len)
+        # 暖機用的那段歷史資料本身也可能產生訊號，但那不是使用者要求的回測窗口——
+        # 用每筆交易自己的 entry_timestamp 篩（不是位置對位，訊號本來就不是每根
+        # K棒都觸發，位置對位會把交易跟不相關的K棒時間錯誤配對，見這裡修正前的說明）。
+        trades = [t for t in all_trades if t["entry_timestamp"] >= days_ago_ms]
+
+        summary = _backtest_summarize(trades)
+        return BacktestResponse(
+            symbol=ccxt_symbol, strategy_name=payload.strategy_name,
+            sample_sufficient=summary["total_trades"] >= BACKTEST_MIN_TRADES_FOR_CONFIDENCE,
+            days_range_requested=payload.days_range, days_range_used=days_range,
+            data_source="ccxt (BingX/Binance/OKX)", **summary,
+        )
+
+    # us_stock_orb
+    try:
+        raw = await asyncio.to_thread(_backtest_fetch_yf_ohlcv, symbol_raw, days_range)
+        regime_raw = await asyncio.to_thread(_backtest_fetch_yf_ohlcv, "QQQ", days_range)
+    except Exception as exc:  # noqa: BLE001 - yfinance偶發網路錯誤，統一轉成502而不是讓端點500
+        raise HTTPException(status_code=502, detail=f"抓取 {symbol_raw} 歷史K線失敗：{exc}")
+
+    if raw.empty or regime_raw.empty:
+        raise HTTPException(status_code=502, detail=f"抓不到 {symbol_raw} 或大盤濾網(QQQ)的歷史K線，請確認代號是否正確")
+
+    regime_df = _backtest_compute_regime_series(regime_raw)
+    trades = _backtest_simulate_us_stock_orb(symbol_raw, symbol_raw, raw, regime_df)
+    summary = _backtest_summarize(trades)
+
+    return BacktestResponse(
+        symbol=symbol_raw, strategy_name=payload.strategy_name,
+        sample_sufficient=summary["total_trades"] >= BACKTEST_MIN_TRADES_FOR_CONFIDENCE,
+        days_range_requested=payload.days_range, days_range_used=min(days_range, BACKTEST_YF_MAX_DAYS),
+        data_source="yfinance", **summary,
+    )
 
 
 @app.api_route("/api/health", methods=["GET", "HEAD"])

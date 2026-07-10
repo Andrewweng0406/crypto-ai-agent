@@ -955,6 +955,114 @@ export function adaptAssistantBroadcasts(raw: BackendAssistantBroadcastResponse)
   }))
 }
 
+// ---------------------------------------------------------------------------
+// 🚀 網頁端回測沙盒（獨立、公開功能，靠後端IP限流防護）：把backtest_optimizer.py
+// 已經驗證過的邏輯搬進正式站台。只支援三個有真實歷史資料源的策略——
+// "gamma_squeeze" 這種需要歷史期權OI/大單tick的策略不提供，那份資料不存在。
+// ---------------------------------------------------------------------------
+
+export type BacktestStrategy = "crypto_donchian_1h" | "meme_volume_spike" | "us_stock_orb"
+
+export interface BacktestRequestBody {
+  symbol: string
+  strategy_name: BacktestStrategy
+  days_range: number
+}
+
+export interface BackendBacktestResponse {
+  symbol: string
+  strategy_name: string
+  win_rate: number
+  profit_loss_ratio: number
+  profit_factor: number
+  mdd: number
+  total_trades: number
+  equity_curve: number[]
+  sample_sufficient: boolean
+  days_range_requested: number
+  days_range_used: number
+  data_source: string
+}
+
+export interface BacktestResult {
+  symbol: string
+  strategyName: string
+  winRate: number
+  profitLossRatio: number
+  profitFactor: number
+  mdd: number
+  totalTrades: number
+  equityCurve: number[]
+  sampleSufficient: boolean
+  daysRangeRequested: number
+  daysRangeUsed: number
+  dataSource: string
+}
+
+export function adaptBacktestResult(raw: BackendBacktestResponse): BacktestResult {
+  return {
+    symbol: raw.symbol,
+    strategyName: raw.strategy_name,
+    winRate: raw.win_rate,
+    profitLossRatio: raw.profit_loss_ratio,
+    profitFactor: raw.profit_factor,
+    mdd: raw.mdd,
+    totalTrades: raw.total_trades,
+    equityCurve: raw.equity_curve,
+    sampleSufficient: raw.sample_sufficient,
+    daysRangeRequested: raw.days_range_requested,
+    daysRangeUsed: raw.days_range_used,
+    dataSource: raw.data_source,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 💥 幣圈爆倉密度清算牆（獨立、實驗性模塊）：資料源自使用者本機執行的
+// liquidation_listener.py（選擇性回傳）。net_liquidation_usd 正值=空頭爆倉
+// （綠，通常在現價上方），負值=多頭爆倉（紅，通常在現價下方）。
+// ---------------------------------------------------------------------------
+
+export interface BackendLiquidationBucket {
+  price_bucket: number
+  net_liquidation_usd: number
+}
+
+export interface BackendLiquidationWallData {
+  symbol: string
+  has_data: boolean
+  spot_price: number | null
+  points: BackendLiquidationBucket[]
+  updated_at: string | null
+}
+
+export interface BackendLiquidationWallsResponse {
+  underlyings: BackendLiquidationWallData[]
+  updated_at: string | null
+}
+
+export interface LiquidationBucket {
+  priceBucket: number
+  netLiquidationUsd: number
+}
+
+export interface LiquidationWallData {
+  symbol: string
+  hasData: boolean
+  spotPrice: number | null
+  points: LiquidationBucket[]
+  updatedAt: string | null
+}
+
+export function adaptLiquidationWalls(raw: BackendLiquidationWallsResponse): LiquidationWallData[] {
+  return raw.underlyings.map((u) => ({
+    symbol: u.symbol,
+    hasData: u.has_data,
+    spotPrice: u.spot_price,
+    points: u.points.map((p) => ({ priceBucket: p.price_bucket, netLiquidationUsd: p.net_liquidation_usd })),
+    updatedAt: u.updated_at,
+  }))
+}
+
 export function formatCompactUsd(value: number): string {
   // 例："$1.24M" / "$850K"，給 GEX 數值/大單權利金這種大數字用，避免顯示一長串0
   const sign = value < 0 ? "-" : ""
