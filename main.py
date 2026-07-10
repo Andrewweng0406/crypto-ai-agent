@@ -324,6 +324,7 @@ OPTIONS_WHALE_SWEEP_FEED_MAX_LEN = 30
 # 這裡只接收本機腳本主動 POST 過來、已經在本機篩選過門檻的大單事件摘要。
 WHALE_SWEEP_API_KEY = os.environ.get("WHALE_SWEEP_API_KEY", "").strip() or None
 MOOMOO_ONLINE_TIMEOUT_SECONDS = 180  # 超過這麼久沒收到本機心跳（任何一次POST都算），前端燈號轉待命
+WHALE_SWEEP_DEDUP_WINDOW_SECONDS = 600  # 本機腳本重啟時 OpenD 可能重送cache tick，10分鐘內視為同一筆交易的重複回報
 
 # --- X（Twitter）自動發文：預留接口，目前未啟用 ---
 # 之後申請到 X Developer 帳號、把這四個環境變數設好，post_to_x() 才會真的動作；
@@ -624,7 +625,13 @@ class WhaleSweepResponse(BaseModel):
 
 
 class WhaleSweepIngestItem(BaseModel):
-    """本機 moomoo_whale_sweep_local.py 主動 POST 回傳雲端的單筆大單事件形狀。"""
+    """
+    本機 moomoo_whale_sweep_local.py 主動 POST 回傳雲端的單筆大單事件形狀。
+    sequence 是 Moomoo OpenD tick 推播自帶的序號，本機端已經先用它去重過一次
+    （見該腳本說明），這裡當第二層防線用——本機腳本重啟時 OpenD 會重送最近的
+    cache tick，萬一本機端的去重狀態剛好也是全新的（例如本機資料庫被清空重建），
+    雲端這層still能攔住同一筆交易被算成兩筆。
+    """
 
     symbol: str
     strike: float
@@ -633,6 +640,7 @@ class WhaleSweepIngestItem(BaseModel):
     side: Optional[Literal["buy", "sell"]] = None
     premium_usd: float
     triggered_at: str
+    sequence: Optional[str] = None
 
 
 class WhaleSweepIngestResponse(BaseModel):
@@ -3763,6 +3771,51 @@ async def get_options_whale_sweep() -> WhaleSweepResponse:
     return WhaleSweepResponse(items=items, updated_at=datetime.now(timezone.utc).isoformat())
 
 
+def _is_duplicate_whale_sweep(new_item: dict, feed: "Deque[dict]") -> bool:
+    """
+    第二層防線（本機腳本已經先用 sequence 去重過一次，見該腳本說明）——本機腳本
+    重啟、或未來多開一份本機監聽時，雲端這邊仍能攔住同一筆交易被算成兩筆。
+
+    sequence（Moomoo tick 推播自帶的序號）比對「不設時間窗」：序號相同就是同一筆
+    tick，跟兩次回報間隔多久無關（實測過同一筆交易在腳本重啟前後被回報，間隔可
+    達12分鐘以上，比原本設的10分鐘視窗還長，設了時間窗反而會漏放）。只有在雙方
+    都沒有 sequence 時（例如舊版腳本還沒更新），才退回比對 (symbol, strike,
+    option_type, premium_usd) 內容特徵，而且這個退路才需要 WHALE_SWEEP_DEDUP_
+    WINDOW_SECONDS 時間窗——內容比對不像序號比對那麼確定，只在時間夠接近時才
+    假設是同一筆，避免隔了很久、剛好金額對上的兩筆不同交易被誤判成重複。
+    """
+    new_seq = new_item.get("sequence")
+    if new_seq:
+        if any(existing.get("sequence") == new_seq for existing in feed):
+            return True
+        return False  # 有帶 sequence 但沒找到相同的，序號本身已經是最可靠的依據，不用再退回內容比對
+
+    try:
+        new_triggered_at = datetime.fromisoformat(new_item["triggered_at"])
+    except (KeyError, ValueError):
+        return False  # 時間戳格式異常時不擋（寧可誤放，不要誤刪真實大單）
+
+    for existing in feed:
+        if existing.get("sequence"):
+            continue  # 對方有序號、這筆沒有，序號不同語意的東西不能拿來互相比對內容
+        try:
+            existing_triggered_at = datetime.fromisoformat(existing["triggered_at"])
+        except (KeyError, ValueError):
+            continue
+        if abs((new_triggered_at - existing_triggered_at).total_seconds()) > WHALE_SWEEP_DEDUP_WINDOW_SECONDS:
+            continue
+
+        if (
+            new_item.get("symbol") == existing.get("symbol")
+            and new_item.get("strike") == existing.get("strike")
+            and new_item.get("option_type") == existing.get("option_type")
+            and new_item.get("premium_usd") == existing.get("premium_usd")
+        ):
+            return True
+
+    return False
+
+
 @app.post("/api/us/whale-sweep", response_model=WhaleSweepIngestResponse)
 async def ingest_whale_sweep(
     item: WhaleSweepIngestItem, x_api_key: Optional[str] = Header(None, alias="X-API-Key")
@@ -3772,16 +3825,21 @@ async def ingest_whale_sweep(
     沒設定時直接拒收（避免預設開放給任何人寫入），設定了但金鑰不符也拒收。
     Moomoo/Futu 連線本身完全在使用者本機、帳密不會經過這裡——這支端點只接收
     已經在本機篩選過權利金門檻的事件摘要，是一般的資料寫入端點，不是帳號代理。
+
+    accepted=False 代表判定為重複回報（見 _is_duplicate_whale_sweep），不會
+    寫進 whale_sweep_feed，但心跳照樣更新——重複事件本身依然證明本機監聽是活的。
     """
     if WHALE_SWEEP_API_KEY is None or x_api_key != WHALE_SWEEP_API_KEY:
         raise HTTPException(status_code=401, detail="無效或缺少 X-API-Key")
 
     record = item.model_dump()
     async with state.lock:
-        state.whale_sweep_feed.appendleft(record)
+        is_duplicate = _is_duplicate_whale_sweep(record, state.whale_sweep_feed)
+        if not is_duplicate:
+            state.whale_sweep_feed.appendleft(record)
         state.moomoo_last_seen_monotonic = time.monotonic()
         moomoo_online = state.moomoo_online
-    return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
+    return WhaleSweepIngestResponse(accepted=not is_duplicate, moomoo_online=moomoo_online)
 
 
 @app.post("/api/us/whale-sweep/heartbeat", response_model=WhaleSweepIngestResponse)
