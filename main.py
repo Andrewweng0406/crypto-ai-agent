@@ -3784,6 +3784,25 @@ async def ingest_whale_sweep(
     return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
 
 
+@app.post("/api/us/whale-sweep/heartbeat", response_model=WhaleSweepIngestResponse)
+async def whale_sweep_heartbeat(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> WhaleSweepIngestResponse:
+    """
+    獨立的輕量心跳端點，跟 ingest_whale_sweep 分開。原本 moomoo_online 只在真的
+    POST 一筆大單事件時才更新 last_seen，但大單（權利金>$500K）本來就不常發生，
+    兩次大單間隔一旦超過 MOOMOO_ONLINE_TIMEOUT_SECONDS，燈號就會誤判成離線，
+    即使本機監聽完全正常——這是「有沒有連線」跟「有沒有大單」被錯誤綁在一起的
+    設計缺陷。這支端點讓本機腳本能固定回報「我還活著」，不需要真的等到大單發生，
+    不寫入 whale_sweep_feed，只更新心跳時間戳。
+    """
+    if WHALE_SWEEP_API_KEY is None or x_api_key != WHALE_SWEEP_API_KEY:
+        raise HTTPException(status_code=401, detail="無效或缺少 X-API-Key")
+
+    async with state.lock:
+        state.moomoo_last_seen_monotonic = time.monotonic()
+        moomoo_online = state.moomoo_online
+    return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
+
+
 @app.get("/api/candles", response_model=CandlesListResponse)
 async def get_candles(symbol: str, limit: int = 60, timeframe: str = TIMEFRAME) -> CandlesListResponse:
     """
