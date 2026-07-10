@@ -121,3 +121,27 @@
     animation: none;
   }
 }
+
+/* 📊 期權 GEX 分佈牆：現貨價發光線的呼吸脈衝，讓它成為圖表的視覺核心，
+   跟臨界點的固定虛線做出明確區隔。只動畫暈染層的透明度，核心亮線本身
+   維持全不透明、隨時清楚可讀。 */
+@keyframes gex-spot-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-gex-spot-pulse {
+  animation: gex-spot-pulse 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-gex-spot-pulse {
+    animation: none;
+    opacity: 0.45;
+  }
+}
