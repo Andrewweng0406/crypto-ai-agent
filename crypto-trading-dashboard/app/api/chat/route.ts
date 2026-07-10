@@ -19,6 +19,43 @@ const MAX_TOOL_ROUNDS = 4 // 防止模型陷入無限工具呼叫迴圈，超過
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000"
 
+// ---------------------------------------------------------------------------
+// IP 限流：每個 IP 每小時最多 RATE_LIMIT_MAX_REQUESTS 次，防止公開端點被刷爆
+// token 額度。⚠️ 誠實聲明：這是 in-memory Map，只在單一 serverless 執行個體
+// 的生命週期內有效——Vercel 可能同時起多個執行個體處理不同請求，冷啟動也會
+// 讓計數歸零，所以這不是精確、跨個體一致的限流，是「多一層基本防護」而不是
+// 密不透風的保證。真的要做到精確全域限流需要外部儲存（Redis/Vercel KV），
+// 目前流量規模用不到那個複雜度。
+// ---------------------------------------------------------------------------
+const RATE_LIMIT_MAX_REQUESTS = 15
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000 // 1小時
+const RATE_LIMIT_MAX_TRACKED_IPS = 5000 // 防止長時間warm的執行個體累積過多不同IP造成記憶體無限成長
+
+const requestLog = new Map<string, number[]>()
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers.get("x-forwarded-for")
+  if (forwarded) return forwarded.split(",")[0].trim()
+  return req.headers.get("x-real-ip") ?? "unknown"
+}
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now()
+  const timestamps = (requestLog.get(ip) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS)
+
+  if (timestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
+    requestLog.set(ip, timestamps)
+    return true
+  }
+
+  timestamps.push(now)
+  if (requestLog.size >= RATE_LIMIT_MAX_TRACKED_IPS && !requestLog.has(ip)) {
+    requestLog.clear() // 簡單粗暴的防護：追蹤的IP數量失控時直接清空重來，不值得為此引入LRU
+  }
+  requestLog.set(ip, timestamps)
+  return false
+}
+
 const SYSTEM_PROMPT_BASE = `你是「Weng Crypto」交易終端內建的 AI 交易軍師助理，服務對象是主動交易者。
 
 【天條一：無所不知的市場百科】
@@ -204,6 +241,14 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 }
 
 export async function POST(req: Request) {
+  const clientIp = getClientIp(req)
+  if (isRateLimited(clientIp)) {
+    return new Response(
+      JSON.stringify({ error: `請求過於頻繁，每小時最多 ${RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。` }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    )
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
 
   if (!apiKey) {

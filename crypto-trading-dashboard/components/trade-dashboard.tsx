@@ -6,6 +6,8 @@ import { Activity, AlertTriangle, Radar, Zap } from "lucide-react"
 import {
   adaptHistory,
   adaptMemeAlerts,
+  adaptMemeTradeHistory,
+  adaptMemeTradeList,
   adaptMemeWatchlist,
   adaptNewsAgent,
   adaptOptionsGexList,
@@ -19,6 +21,8 @@ import {
   formatTime,
   type BackendHistoryResponse,
   type BackendMemeRadarResponse,
+  type BackendMemeTradeHistoryResponse,
+  type BackendMemeTradeListResponse,
   type BackendNewsAgentResponse,
   type BackendOptionsGexListResponse,
   type BackendSignalListResponse,
@@ -26,6 +30,7 @@ import {
   type BackendUSStockHistoryResponse,
   type BackendUSStockListResponse,
   type BackendWhaleSweepResponse,
+  type NewsCategory,
   type Universe,
 } from "@/lib/signals"
 import { HeroSignal } from "@/components/hero-signal"
@@ -36,6 +41,7 @@ import { RecentHistory } from "@/components/recent-history"
 import { SymbolWatchlist } from "@/components/symbol-watchlist"
 import { OpportunityList } from "@/components/opportunity-list"
 import { MemeRadar } from "@/components/meme-radar"
+import { MemeTradeWatchlist } from "@/components/meme-trade-watchlist"
 import { MonitoringPanel } from "@/components/monitoring-panel"
 import { USStockWatchlist } from "@/components/us-stock-watchlist"
 import { USStockMonitoringPanel } from "@/components/us-stock-monitoring-panel"
@@ -52,14 +58,15 @@ const fetcher = (url: string) =>
     return body
   })
 
-// 迷因雷達、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣不同的資料
-// 形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "usStock" | "newsAgent" | "optionsAnalytics"
+// 迷因雷達、迷因當沖、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣
+// 不同的資料形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
+type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "major", label: "主流幣" },
   { key: "scan", label: "市場掃描" },
   { key: "meme", label: "迷因雷達" },
+  { key: "memeTrade", label: "🔥 迷因當沖" },
   { key: "usStock", label: "美股 ORB" },
   { key: "newsAgent", label: "AI 智能輿情雷達" },
   { key: "optionsAnalytics", label: "📊 期權分析" },
@@ -68,8 +75,10 @@ const TABS: { key: TabKey; label: string }[] = [
 export function TradeDashboard() {
   const [mode, setMode] = useState<TabKey>("major")
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+  const [newsCategory, setNewsCategory] = useState<NewsCategory | "all">("all")
 
   const isMemeMode = mode === "meme"
+  const isMemeTradeMode = mode === "memeTrade"
   const isUSStockMode = mode === "usStock"
   const isNewsAgentMode = mode === "newsAgent"
   const isOptionsMode = mode === "optionsAnalytics"
@@ -79,9 +88,25 @@ export function TradeDashboard() {
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isUSStockMode || isNewsAgentMode || isOptionsMode ? null : `/api/signals?universe=${mode}`,
+    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode
+      ? null
+      : `/api/signals?universe=${mode}`,
     fetcher,
     { refreshInterval: mode === "major" ? 5000 : 12000 },
+  )
+
+  const {
+    data: rawMemeTrade,
+    error: memeTradeError,
+    isLoading: memeTradeLoading,
+  } = useSWR<BackendMemeTradeListResponse>(isMemeTradeMode ? "/api/meme-trade" : null, fetcher, {
+    refreshInterval: 5000,
+  })
+
+  const { data: rawMemeTradeHistory, error: memeTradeHistoryError } = useSWR<BackendMemeTradeHistoryResponse>(
+    isMemeTradeMode ? "/api/meme-trade/history" : null,
+    fetcher,
+    { refreshInterval: 15000 },
   )
 
   // 📊 期權分析：美股盤中 GEX 剖面每分鐘才會重算一次，不需要跟加密貨幣一樣
@@ -161,8 +186,23 @@ export function TradeDashboard() {
     [rawUSStockHistory],
   )
   const newsItems = useMemo(() => (rawNews ? adaptNewsAgent(rawNews) : []), [rawNews])
+  const filteredNewsItems = useMemo(
+    () => (newsCategory === "all" ? newsItems : newsItems.filter((item) => item.category === newsCategory)),
+    [newsItems, newsCategory],
+  )
+  const memeTradeCoins = useMemo(() => (rawMemeTrade ? adaptMemeTradeList(rawMemeTrade) : []), [rawMemeTrade])
+  const memeTradeHistoryData = useMemo(
+    () =>
+      rawMemeTradeHistory
+        ? adaptMemeTradeHistory(rawMemeTradeHistory)
+        : { trades: [], stats: { totalTrades: 0, wins: 0, losses: 0, winRatePct: 0 } },
+    [rawMemeTradeHistory],
+  )
   const optionsGexData = useMemo(
-    () => (rawOptionsGex ? adaptOptionsGexList(rawOptionsGex) : { underlyings: [], dataSourceOk: false }),
+    () =>
+      rawOptionsGex
+        ? adaptOptionsGexList(rawOptionsGex)
+        : { underlyings: [], dataSourceOk: false, moomooOnline: false },
     [rawOptionsGex],
   )
   const whaleSweepItems = useMemo(() => (rawWhaleSweep ? adaptWhaleSweep(rawWhaleSweep) : []), [rawWhaleSweep])
@@ -185,6 +225,19 @@ export function TradeDashboard() {
       return
     }
 
+    if (isMemeTradeMode) {
+      if (memeTradeCoins.length === 0) {
+        setSelectedSymbol(null)
+        return
+      }
+      const stillPresent = memeTradeCoins.some((c) => c.symbol === selectedSymbol)
+      if (!stillPresent) {
+        const firstOpen = memeTradeCoins.find((c) => c.status === "OPEN")
+        setSelectedSymbol((firstOpen ?? memeTradeCoins[0]).symbol)
+      }
+      return
+    }
+
     if (signals.length === 0) {
       setSelectedSymbol(null)
       return
@@ -194,38 +247,45 @@ export function TradeDashboard() {
       const firstOpen = signals.find((s) => s.status === "OPEN")
       setSelectedSymbol((firstOpen ?? signals[0]).symbol)
     }
-  }, [signals, usStockData, isUSStockMode, selectedSymbol])
+  }, [signals, usStockData, isUSStockMode, isMemeTradeMode, memeTradeCoins, selectedSymbol])
 
   const selected = signals.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
+  const selectedMemeTrade = memeTradeCoins.find((c) => c.symbol === selectedSymbol) ?? null
 
   const activeError = isMemeMode
     ? memesError
-    : isUSStockMode
-      ? usStocksError
-      : isNewsAgentMode
-        ? newsError
-        : isOptionsMode
-          ? optionsGexError
-          : signalsError
+    : isMemeTradeMode
+      ? memeTradeError
+      : isUSStockMode
+        ? usStocksError
+        : isNewsAgentMode
+          ? newsError
+          : isOptionsMode
+            ? optionsGexError
+            : signalsError
   const activeLoading = isMemeMode
     ? memesLoading
-    : isUSStockMode
-      ? usStocksLoading
-      : isNewsAgentMode
-        ? newsLoading
-        : isOptionsMode
-          ? optionsGexLoading
-          : signalsLoading
+    : isMemeTradeMode
+      ? memeTradeLoading
+      : isUSStockMode
+        ? usStocksLoading
+        : isNewsAgentMode
+          ? newsLoading
+          : isOptionsMode
+            ? optionsGexLoading
+            : signalsLoading
   const isConnected = isMemeMode
     ? !memesError && !!rawMemes
-    : isUSStockMode
-      ? !usStocksError && !!rawUSStocks
-      : isNewsAgentMode
-        ? !newsError && !!rawNews
-        : isOptionsMode
-          ? !optionsGexError && !!rawOptionsGex
-          : !signalsError && !!rawSignals
+    : isMemeTradeMode
+      ? !memeTradeError && !!rawMemeTrade
+      : isUSStockMode
+        ? !usStocksError && !!rawUSStocks
+        : isNewsAgentMode
+          ? !newsError && !!rawNews
+          : isOptionsMode
+            ? !optionsGexError && !!rawOptionsGex
+            : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -281,6 +341,61 @@ export function TradeDashboard() {
             迷因幣雷達為獨立功能：從迷因幣候選池依 24h 成交量動態排名監控前 10 大，純粹偵測現貨的成交量異常放大
             （同時標示是拉盤還是砸盤），不是交易訊號，沒有方向、槓桿或 TP/SL。⚡ 爆破狀態燈號（Squeeze
             Mode）是額外疊加的實驗性判斷，未經回測驗證。
+          </p>
+        </>
+      ) : isMemeTradeMode ? (
+        <>
+          <MemeTradeWatchlist coins={memeTradeCoins} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
+
+          {selectedMemeTrade && selectedMemeTrade.status === "OPEN" && selectedMemeTrade.signal ? (
+            <HeroSignal signal={selectedMemeTrade.signal} />
+          ) : selectedMemeTrade ? (
+            <NoActiveSignal
+              symbol={selectedMemeTrade.displayName}
+              currentPrice={selectedMemeTrade.currentPrice}
+              updatedAt={selectedMemeTrade.updatedAt ?? new Date().toISOString()}
+            />
+          ) : (
+            !memeTradeError && (
+              <div className="rounded-2xl border border-dashed border-border/60 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+                資料載入中…
+              </div>
+            )
+          )}
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+            <div className="flex flex-col gap-5 lg:col-span-2">
+              {selectedMemeTrade && selectedMemeTrade.status === "OPEN" && selectedMemeTrade.signal ? (
+                <>
+                  <SignalChart signal={selectedMemeTrade.signal} candleSymbol={selectedMemeTrade.symbol} timeframe="1h" />
+                  <PriceRangeGauge signal={selectedMemeTrade.signal} />
+                </>
+              ) : (
+                <div className="flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
+                  <Radar className="size-6" aria-hidden="true" />
+                  目前無持倉，等待引擎偵測到 1H 爆量訊號（成交量≥24h均量3倍 + 方向確認）。
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col gap-5">
+              {selectedMemeTrade && selectedMemeTrade.status === "OPEN" && selectedMemeTrade.signal && (
+                <PriceLevels signal={selectedMemeTrade.signal} />
+              )}
+            </div>
+          </div>
+
+          <USStockHistory
+            title="實盤成交紀錄（迷因當沖）"
+            trades={memeTradeHistoryData.trades}
+            stats={memeTradeHistoryData.stats}
+            error={memeTradeHistoryError?.message}
+          />
+
+          <p className="text-center text-xs text-muted-foreground">
+            迷因當沖為正式實盤功能：僅 WIF / DOGE 上線——180天回測裡唯二樣本數跨過統計門檻的幣種（WIF 19筆
+            PF1.36、DOGE 20筆 PF1.46），其餘迷因雷達候選幣沒有被驗證過，不會自動加入這個策略。
+            <strong className="text-foreground">30天單一窗口回測不保證樣本外表現</strong>，請持續觀察上方實盤紀錄。
+            訊號邏輯：1H成交量≥24h均量3倍+方向確認，ATR×1.5停損，盈虧比2:1。
           </p>
         </>
       ) : isUSStockMode ? (
@@ -368,11 +483,28 @@ export function TradeDashboard() {
         </>
       ) : isNewsAgentMode ? (
         <>
-          <NewsRadar items={newsItems} isLoading={newsLoading} error={undefined} />
+          <div className="flex w-fit gap-1 rounded-full border border-border/60 bg-card p-1">
+            {(["all", "crypto", "us_stock"] as const).map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setNewsCategory(cat)}
+                className={`rounded-full px-3.5 py-1 text-xs font-semibold transition-colors ${
+                  newsCategory === cat
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {cat === "all" ? "全部" : cat === "crypto" ? "加密貨幣" : "美股"}
+              </button>
+            ))}
+          </div>
+          <NewsRadar items={filteredNewsItems} isLoading={newsLoading} error={undefined} />
           <p className="text-center text-xs text-muted-foreground">
             AI 智能輿情雷達為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
             等公開新聞來源，交給 AI 判斷相關標的與情緒分數（-10~+10），純粹是資訊監控，
-            <strong className="text-foreground">不是交易訊號</strong>，沒有方向、槓桿或 TP/SL。
+            <strong className="text-foreground">不是交易訊號</strong>，沒有方向、槓桿或 TP/SL。分類依 AI
+            判斷出的標的自動歸類加密貨幣／美股，沒有明確標的時預設歸美股。
           </p>
         </>
       ) : isOptionsMode ? (
@@ -381,6 +513,7 @@ export function TradeDashboard() {
             underlyings={optionsGexData.underlyings}
             whaleSweepItems={whaleSweepItems}
             dataSourceOk={optionsGexData.dataSourceOk}
+            moomooOnline={optionsGexData.moomooOnline}
             isLoading={optionsGexLoading}
             whaleSweepLoading={whaleSweepLoading}
           />
@@ -388,7 +521,8 @@ export function TradeDashboard() {
             期權分析為獨立功能：串接 yfinance 期權鏈，自行用 Black-Scholes 模型計算 Gamma
             曝險（GEX）分佈與擠壓臨界點，<strong className="text-foreground">純粹是造市商部位結構的參考資訊，不是交易訊號</strong>
             ，沒有方向、槓桿或 TP/SL。首批監控標的：NVDA / TSLA / SPY / SMCI / SPCX，僅在美股交易時段更新。期權大單即時流
-            目前資料源無法提供逐筆成交數據，暫不支援。
+            資料源自使用者本機執行的 Moomoo Whale Sweep 監聽工具（選擇性回傳），Live/Standby
+            燈號代表本機監聽目前是否在線，離線時 GEX 主面板不受影響、只是大單清單不會有新資料。
           </p>
         </>
       ) : (

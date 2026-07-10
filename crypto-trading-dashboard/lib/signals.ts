@@ -563,6 +563,8 @@ export function adaptUSStockHistory(raw: BackendUSStockHistoryResponse): {
 // 純資訊面板，沒有方向/TP/SL/槓桿，跟迷因雷達同樣是「監控」而不是交易訊號。
 // ---------------------------------------------------------------------------
 
+export type NewsCategory = "crypto" | "us_stock"
+
 export interface BackendNewsItem {
   title: string
   url: string
@@ -571,6 +573,7 @@ export interface BackendNewsItem {
   symbols: string[]
   summary: string
   sentiment_score: number  // -10（極度利空）~ +10（極度利多）
+  category: NewsCategory
   processed_at: string
 }
 
@@ -586,6 +589,7 @@ export interface NewsItem {
   symbols: string[]
   summary: string
   sentimentScore: number
+  category: NewsCategory
   processedAt: string
 }
 
@@ -597,6 +601,7 @@ export function adaptNewsAgent(raw: BackendNewsAgentResponse): NewsItem[] {
     symbols: item.symbols,
     summary: item.summary,
     sentimentScore: item.sentiment_score,
+    category: item.category,
     processedAt: item.processed_at,
   }))
 }
@@ -702,6 +707,7 @@ export interface BackendOptionsGexResponse {
 export interface BackendOptionsGexListResponse {
   underlyings: BackendOptionsGexResponse[]
   data_source_ok: boolean
+  moomoo_online: boolean
   updated_at: string | null
 }
 
@@ -726,6 +732,7 @@ export interface OptionsGexData {
 export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
   underlyings: OptionsGexData[]
   dataSourceOk: boolean
+  moomooOnline: boolean
 } {
   return {
     underlyings: raw.underlyings.map((u) => ({
@@ -739,6 +746,7 @@ export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
       updatedAt: u.updated_at,
     })),
     dataSourceOk: raw.data_source_ok,
+    moomooOnline: raw.moomoo_online,
   }
 }
 
@@ -747,7 +755,7 @@ export interface BackendWhaleSweepItem {
   strike: number
   expiry: string
   option_type: "call" | "put"
-  side: "buy" | "sell"
+  side: "buy" | "sell" | null
   premium_usd: number
   triggered_at: string
 }
@@ -762,7 +770,7 @@ export interface WhaleSweepItem {
   strike: number
   expiry: string
   optionType: "call" | "put"
-  side: "buy" | "sell"
+  side: "buy" | "sell" | null
   premiumUsd: number
   triggeredAt: string
 }
@@ -777,6 +785,136 @@ export function adaptWhaleSweep(raw: BackendWhaleSweepResponse): WhaleSweepItem[
     premiumUsd: item.premium_usd,
     triggeredAt: item.triggered_at,
   }))
+}
+
+// ---------------------------------------------------------------------------
+// 🔥 迷因幣1H爆量當沖（正式實盤，獨立模塊）：只有 WIF/DOGE 兩檔——180天回測裡
+// 唯二樣本數跨過統計門檻的幣種。跟純警報用的迷因雷達完全不同，這裡有方向/
+// TP/SL/槓桿，OPEN 狀態沿用跟主流幣一樣的 Signal type，可以直接重用
+// HeroSignal/PriceLevels/PriceRangeGauge 三個既有元件。
+// ---------------------------------------------------------------------------
+
+export interface BackendMemeTradeResponse {
+  symbol: string
+  display_name: string
+  status: "OPEN" | "NO_SIGNAL"
+  side: Side | null
+  entry_price: number | null
+  current_price: number | null
+  take_profit: number | null
+  stop_loss: number | null
+  stop_loss_pct: number | null
+  leverage: number | null
+  risk_reward_ratio: number | null
+  opened_at: string | null
+  updated_at: string | null
+}
+
+export interface BackendMemeTradeListResponse {
+  coins: BackendMemeTradeResponse[]
+  updated_at: string | null
+}
+
+export interface MemeTradeState {
+  status: "OPEN" | "NO_SIGNAL"
+  symbol: string
+  displayName: string
+  currentPrice: number | null
+  updatedAt: string | null
+  signal: Signal | null
+}
+
+export function adaptMemeTrade(raw: BackendMemeTradeResponse): MemeTradeState {
+  if (
+    raw.status !== "OPEN" ||
+    raw.side === null ||
+    raw.entry_price === null ||
+    raw.take_profit === null ||
+    raw.stop_loss === null ||
+    raw.leverage === null
+  ) {
+    return {
+      status: "NO_SIGNAL",
+      symbol: raw.symbol,
+      displayName: raw.display_name,
+      currentPrice: raw.current_price,
+      updatedAt: raw.updated_at,
+      signal: null,
+    }
+  }
+
+  return {
+    status: "OPEN",
+    symbol: raw.symbol,
+    displayName: raw.display_name,
+    currentPrice: raw.current_price,
+    updatedAt: raw.updated_at,
+    signal: {
+      symbol: raw.display_name,
+      side: raw.side,
+      current_price: raw.current_price ?? raw.entry_price,
+      entry_price: raw.entry_price,
+      leverage: raw.leverage,
+      tp: raw.take_profit,
+      sl: raw.stop_loss,
+      timestamp: raw.opened_at ?? raw.updated_at ?? new Date().toISOString(),
+      smartMoneyNotes: [],
+    },
+  }
+}
+
+export function adaptMemeTradeList(raw: BackendMemeTradeListResponse): MemeTradeState[] {
+  return raw.coins.map(adaptMemeTrade)
+}
+
+export interface BackendMemeTradeHistoryItem {
+  symbol: string
+  display_name: string
+  side: Side
+  entry_price: number
+  exit_price: number
+  take_profit: number
+  stop_loss: number
+  leverage: number
+  result: "WIN" | "LOSS"
+  pnl_pct: number
+  opened_at: string
+  closed_at: string
+}
+
+export interface BackendMemeTradeHistoryResponse {
+  trades: BackendMemeTradeHistoryItem[]
+  stats: {
+    total_trades: number
+    wins: number
+    losses: number
+    win_rate_pct: number
+  }
+}
+
+export function adaptMemeTradeHistory(raw: BackendMemeTradeHistoryResponse): {
+  trades: USStockHistoryItem[]
+  stats: HistoryStats
+} {
+  return {
+    trades: raw.trades.map((t, i) => ({
+      id: `${t.symbol}-${t.closed_at}-${i}`,
+      symbol: t.symbol,
+      displayName: t.display_name,
+      side: t.side,
+      entryPrice: t.entry_price,
+      exitPrice: t.exit_price,
+      result: t.result,
+      pnlPct: t.pnl_pct,
+      closedAt: t.closed_at,
+    })),
+    stats: {
+      totalTrades: raw.stats.total_trades,
+      wins: raw.stats.wins,
+      losses: raw.stats.losses,
+      winRatePct: raw.stats.win_rate_pct,
+    },
+  }
 }
 
 export function formatCompactUsd(value: number): string {

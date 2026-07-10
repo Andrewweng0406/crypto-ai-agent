@@ -5,18 +5,20 @@ interface USStockHistoryProps {
   trades: USStockHistoryItem[]
   stats: HistoryStats
   error?: string
+  title?: string
 }
 
 // 實盤累積成交紀錄，不是回測——樣本數在累積起來之前（尤其剛上線那幾天）沒有
-// 統計意義，所以永遠標註「實盤」而不是暗示這是驗證過的勝率。
-export function USStockHistory({ trades, stats, error }: USStockHistoryProps) {
+// 統計意義，所以永遠標註「實盤」而不是暗示這是驗證過的勝率。跟迷因當沖共用
+// 這個元件（資料形狀完全一致），用 title prop 區分標題。
+export function USStockHistory({ trades, stats, error, title = "實盤成交紀錄（美股 ORB）" }: USStockHistoryProps) {
   const totalPnlPct = trades.reduce((sum, t) => sum + t.pnlPct, 0)
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/60 bg-card p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          實盤成交紀錄（美股 ORB）
+          {title}
         </h2>
         <span className="text-xs text-muted-foreground">
           非回測，樣本數少時不具統計意義

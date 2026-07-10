@@ -9,6 +9,7 @@ interface OptionsAnalyticsPanelProps {
   underlyings: OptionsGexData[]
   whaleSweepItems: WhaleSweepItem[]
   dataSourceOk: boolean
+  moomooOnline: boolean
   isLoading: boolean
   whaleSweepLoading: boolean
 }
@@ -17,6 +18,7 @@ export function OptionsAnalyticsPanel({
   underlyings,
   whaleSweepItems,
   dataSourceOk,
+  moomooOnline,
   isLoading,
   whaleSweepLoading,
 }: OptionsAnalyticsPanelProps) {
@@ -37,17 +39,34 @@ export function OptionsAnalyticsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div
-        className={
-          "flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs " +
-          (dataSourceOk
-            ? "border-border/60 bg-card/60 text-muted-foreground"
-            : "border-short/30 bg-short/[0.06] text-short")
-        }
-      >
-        <span className={`size-1.5 rounded-full ${dataSourceOk ? "bg-long" : "bg-short"}`} aria-hidden="true" />
-        資料來源：{dataSourceOk ? "正常" : "暫無資料"}
-        {!dataSourceOk && "（美股非交易時段沒有新資料，或剛啟動還在拉第一輪）"}
+      <div className="flex flex-wrap gap-2">
+        <div
+          className={
+            "flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs " +
+            (dataSourceOk
+              ? "border-border/60 bg-card/60 text-muted-foreground"
+              : "border-short/30 bg-short/[0.06] text-short")
+          }
+        >
+          <span className={`size-1.5 rounded-full ${dataSourceOk ? "bg-long" : "bg-short"}`} aria-hidden="true" />
+          GEX資料來源：{dataSourceOk ? "正常" : "暫無資料"}
+          {!dataSourceOk && "（美股非交易時段沒有新資料，或剛啟動還在拉第一輪）"}
+        </div>
+
+        <div
+          className={
+            "flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs " +
+            (moomooOnline
+              ? "border-long/30 bg-long/[0.06] text-long"
+              : "border-border/60 bg-card/60 text-muted-foreground")
+          }
+        >
+          <span
+            className={`size-1.5 rounded-full ${moomooOnline ? "bg-long animate-pulse" : "bg-muted-foreground"}`}
+            aria-hidden="true"
+          />
+          {moomooOnline ? "● Live：本機大單數據即時同步" : "● Standby：本機大單監聽已離線"}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">

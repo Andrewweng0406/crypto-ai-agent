@@ -35,14 +35,12 @@ export function WhaleSweepStream({ items, isLoading, whaleSweepSupported }: Whal
           </p>
         ) : (
           items.map((item, i) => {
-            const isBuy = item.side === "buy"
+            const tone = item.side === "buy" ? "text-long" : item.side === "sell" ? "text-short" : "text-muted-foreground"
+            const label = item.side === "buy" ? "🟢 BUY" : item.side === "sell" ? "🔴 SELL" : "⚪ 方向不明"
             return (
-              <div
-                key={`${item.symbol}-${item.triggeredAt}-${i}`}
-                className={isBuy ? "flex items-center gap-2 text-long" : "flex items-center gap-2 text-short"}
-              >
+              <div key={`${item.symbol}-${item.triggeredAt}-${i}`} className={`flex items-center gap-2 ${tone}`}>
                 <span className="text-muted-foreground">[{formatClockTime(item.triggeredAt)}]</span>
-                <span className="font-bold">{isBuy ? "🟢 BUY" : "🔴 SELL"}</span>
+                <span className="font-bold">{label}</span>
                 <span className="font-bold">${shortSymbol(item.symbol)}</span>
                 <span className="text-muted-foreground">
                   {item.optionType === "call" ? "Call" : "Put"} ${formatPrice(item.strike)} · {item.expiry}
