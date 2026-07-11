@@ -12,5 +12,9 @@ crypto-trading-dashboard/node_modules/
 crypto-trading-dashboard/.next/
 crypto-trading-dashboard/.env.local
 
+# --- 本機 launchd 自動重啟：wrapper腳本會含有真實API金鑰 ---
+scripts/run_liquidation_listener.sh
+scripts/run_moomoo_whale_sweep.sh
+
 # --- OS ---
 .DS_Store
