@@ -1,35 +1,41 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { AlertTriangle, Rocket } from "lucide-react"
+import { AlertTriangle, Rocket, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   adaptBacktestResult,
+  adaptWalkForwardResult,
   type BacktestResult,
   type BacktestStrategy,
   type BackendBacktestResponse,
+  type BackendWalkForwardResponse,
+  type WalkForwardResult,
 } from "@/lib/signals"
 
-// 三個策略各自對應「已知真的有真實歷史資料源」的標的清單，不開放自由輸入
-// 任意代號——避免使用者打錯字/打進系統沒在追蹤的標的，白白浪費一次限流額度
-// 換來一個502。這三組清單刻意跟正式站台其他分頁（主流幣/迷因當沖/期權分析）
-// 已經在追蹤的標的保持一致。
+// 四個策略各自對應「已知真的有真實歷史資料源、也真的驗證過」的標的清單，不開放
+// 自由輸入任意代號——避免使用者打錯字/打進系統沒在追蹤的標的，白白浪費一次限流
+// 額度換來一個502。supertrend_btc_long 只有BTC一檔，見後端SUPERTREND_CAVEAT說明：
+// 2026-07-11完整調查只有「只做多、僅BTCUSDT」版本通過樣本外驗證。
 const STRATEGY_SYMBOLS: Record<BacktestStrategy, string[]> = {
   crypto_donchian_1h: ["BTC", "ETH", "SOL"],
   meme_volume_spike: ["WIF", "DOGE", "PEPE", "SHIB", "BONK"],
   us_stock_orb: ["NVDA", "TSLA", "SPY", "SMCI", "SPCX"],
+  supertrend_btc_long: ["BTC"],
 }
 
 const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
   crypto_donchian_1h: "1H 唐奇安突破（主流幣）",
   meme_volume_spike: "1H 爆量當沖（迷因幣）",
   us_stock_orb: "開盤區間突破（美股ORB）",
+  supertrend_btc_long: "SuperTrend 爆量狙擊手（只做多，僅BTC）",
 }
 
 const STRATEGY_MAX_DAYS: Record<BacktestStrategy, number> = {
   crypto_donchian_1h: 180,
   meme_volume_spike: 180,
   us_stock_orb: 60, // yfinance 15分鐘K線真實上限，見後端 BACKTEST_YF_MAX_DAYS 說明
+  supertrend_btc_long: 180,
 }
 
 const fetcher = async (url: string, body: unknown): Promise<BackendBacktestResponse> => {
@@ -43,6 +49,17 @@ const fetcher = async (url: string, body: unknown): Promise<BackendBacktestRespo
   return json
 }
 
+const walkForwardFetcher = async (): Promise<BackendWalkForwardResponse> => {
+  const res = await fetch("/api/backtest/walk-forward", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json?.detail ?? `請求失敗（${res.status}）`)
+  return json
+}
+
 // 📊 網頁端回測沙盒：把 backtest_optimizer.py 已經驗證過的邏輯搬上正式站台，
 // 只支援三個有真實歷史資料源的策略。公開端點，後端有IP限流（15次/小時）
 // 防止被用來刷爆外部交易所/yfinance API額度。
@@ -50,18 +67,26 @@ export function BacktestSandboxPanel() {
   const [strategy, setStrategy] = useState<BacktestStrategy>("crypto_donchian_1h")
   const [symbol, setSymbol] = useState<string>(STRATEGY_SYMBOLS.crypto_donchian_1h[0])
   const [daysRange, setDaysRange] = useState<number>(30)
+  const [stLength, setStLength] = useState<number>(10)
+  const [stMultiplier, setStMultiplier] = useState<number>(3.0)
+  const [stRiskReward, setStRiskReward] = useState<number>(4.0)
+  const [mode, setMode] = useState<"single" | "walk_forward">("single")
   const [result, setResult] = useState<BacktestResult | null>(null)
+  const [wfResult, setWfResult] = useState<WalkForwardResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const availableSymbols = STRATEGY_SYMBOLS[strategy]
   const maxDays = STRATEGY_MAX_DAYS[strategy]
+  const isSupertrend = strategy === "supertrend_btc_long"
 
   const handleStrategyChange = (next: BacktestStrategy) => {
     setStrategy(next)
     setSymbol(STRATEGY_SYMBOLS[next][0])
     setDaysRange((prev) => Math.min(prev, STRATEGY_MAX_DAYS[next]))
+    setMode("single")
     setResult(null)
+    setWfResult(null)
     setError(null)
   }
 
@@ -69,11 +94,34 @@ export function BacktestSandboxPanel() {
     setIsLoading(true)
     setError(null)
     setResult(null)
+    setWfResult(null)
     try {
-      const raw = await fetcher("/api/backtest", { symbol, strategy_name: strategy, days_range: daysRange })
+      const raw = await fetcher("/api/backtest", {
+        symbol,
+        strategy_name: strategy,
+        days_range: daysRange,
+        ...(isSupertrend
+          ? { st_length: stLength, st_multiplier: stMultiplier, st_risk_reward: stRiskReward }
+          : {}),
+      })
       setResult(adaptBacktestResult(raw))
     } catch (err) {
       setError(err instanceof Error ? err.message : "回測請求失敗")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const runWalkForward = async () => {
+    setIsLoading(true)
+    setError(null)
+    setResult(null)
+    setWfResult(null)
+    try {
+      const raw = await walkForwardFetcher()
+      setWfResult(adaptWalkForwardResult(raw))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "滾動式驗證請求失敗")
     } finally {
       setIsLoading(false)
     }
@@ -108,52 +156,137 @@ export function BacktestSandboxPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* 標的下拉選單 */}
+      {/* SuperTrend專屬：單次回測 vs 滾動式Walk-Forward驗證模式切換 */}
+      {isSupertrend && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">標的</span>
-          <select
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
-            className="rounded-xl border border-border/60 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
-          >
-            {availableSymbols.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">驗證模式</span>
+          <div className="flex w-fit gap-1 rounded-full border border-border/60 bg-secondary/30 p-1">
+            {(
+              [
+                { key: "single" as const, label: "單次回測" },
+                { key: "walk_forward" as const, label: "🔁 滾動式Walk-Forward" },
+              ]
+            ).map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => {
+                  setMode(m.key)
+                  setResult(null)
+                  setWfResult(null)
+                  setError(null)
+                }}
+                className={cn(
+                  "rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors",
+                  mode === m.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {m.label}
+              </button>
             ))}
-          </select>
+          </div>
         </div>
+      )}
 
-        {/* 天數滑塊 */}
-        <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            回測天數：<span className="font-mono text-foreground">{daysRange}</span> 天
-            {daysRange > maxDays && (
-              <span className="ml-1 text-short">（會被夾到 {maxDays} 天，資料源真實上限）</span>
-            )}
-          </span>
-          <input
-            type="range"
-            min={7}
-            max={180}
-            step={1}
-            value={daysRange}
-            onChange={(e) => setDaysRange(Number(e.target.value))}
-            className="accent-primary"
-          />
-        </div>
-      </div>
+      {mode === "single" ? (
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* 標的下拉選單 */}
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">標的</span>
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                className="rounded-xl border border-border/60 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+              >
+                {availableSymbols.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-      <button
-        type="button"
-        onClick={runBacktest}
-        disabled={isLoading}
-        className="flex items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        <Rocket className={cn("size-4", isLoading && "animate-pulse")} aria-hidden="true" />
-        {isLoading ? "回測執行中…（真實抓取歷史資料，可能需要數秒到數十秒）" : "開始優化回測"}
-      </button>
+            {/* 天數滑塊 */}
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                回測天數：<span className="font-mono text-foreground">{daysRange}</span> 天
+                {daysRange > maxDays && (
+                  <span className="ml-1 text-short">（會被夾到 {maxDays} 天，資料源真實上限）</span>
+                )}
+              </span>
+              <input
+                type="range"
+                min={7}
+                max={180}
+                step={1}
+                value={daysRange}
+                onChange={(e) => setDaysRange(Number(e.target.value))}
+                className="accent-primary"
+              />
+            </div>
+          </div>
+
+          {isSupertrend && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  SuperTrend Length
+                </span>
+                <input
+                  type="number" min={3} max={50} value={stLength}
+                  onChange={(e) => setStLength(Number(e.target.value))}
+                  className="rounded-xl border border-border/60 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Multiplier</span>
+                <input
+                  type="number" min={1} max={6} step={0.5} value={stMultiplier}
+                  onChange={(e) => setStMultiplier(Number(e.target.value))}
+                  className="rounded-xl border border-border/60 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Risk:Reward</span>
+                <input
+                  type="number" min={1.5} max={6} step={0.5} value={stRiskReward}
+                  onChange={(e) => setStRiskReward(Number(e.target.value))}
+                  className="rounded-xl border border-border/60 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+                />
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={runBacktest}
+            disabled={isLoading}
+            className="flex items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <Rocket className={cn("size-4", isLoading && "animate-pulse")} aria-hidden="true" />
+            {isLoading ? "回測執行中…（真實抓取歷史資料，可能需要數秒到數十秒）" : "開始優化回測"}
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">
+            固定跑同一套方法論：12個月訓練窗+4個月測試窗一起往前滑動，每一折都只在該折
+            訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新起始資金）算出樣本外表現——
+            跟單次回測是完全不同層次的驗證，不能自訂參數/天數。需要抓3年歷史K線+跑多折
+            網格搜尋，單次請求約需15-25秒。
+          </p>
+          <button
+            type="button"
+            onClick={runWalkForward}
+            disabled={isLoading}
+            className="flex items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <RefreshCw className={cn("size-4", isLoading && "animate-spin")} aria-hidden="true" />
+            {isLoading ? "滾動式驗證執行中…（約15-25秒，請耐心等候）" : "執行滾動式驗證"}
+          </button>
+        </>
+      )}
 
       {error && (
         <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
@@ -165,6 +298,7 @@ export function BacktestSandboxPanel() {
       {isLoading && <BacktestSkeleton />}
 
       {result && !isLoading && <BacktestResultView result={result} />}
+      {wfResult && !isLoading && <WalkForwardResultView result={wfResult} />}
     </div>
   )
 }
@@ -199,6 +333,12 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
           天，已自動夾住（不是模擬資料）。
         </p>
       )}
+      {result.strategyCaveat && (
+        <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          {result.strategyCaveat}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <WinRateRing winRate={result.winRate} />
@@ -217,6 +357,78 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
         {result.symbol} · {STRATEGY_LABELS[result.strategyName as BacktestStrategy] ?? result.strategyName} ·
         資料源 {result.dataSource} · 獲利因子 {result.profitFactor.toFixed(2)}
       </p>
+    </div>
+  )
+}
+
+function WalkForwardResultView({ result }: { result: WalkForwardResult }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        {result.caveat}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <StatTile
+          label="樣本外獲利折數"
+          value={`${result.oosProfitableFolds}/${result.oosTotalFolds}`}
+          tone={result.oosProfitableFolds / result.oosTotalFolds >= 0.5 ? "long" : "short"}
+        />
+        <StatTile
+          label="平均樣本外報酬"
+          value={`${result.oosAvgReturnPct >= 0 ? "+" : ""}${result.oosAvgReturnPct.toFixed(2)}%`}
+          tone={result.oosAvgReturnPct >= 0 ? "long" : "short"}
+        />
+        <StatTile
+          label="複利串接報酬（整段期間）"
+          value={`${result.oosCompoundedReturnPct >= 0 ? "+" : ""}${result.oosCompoundedReturnPct.toFixed(2)}%`}
+          tone={result.oosCompoundedReturnPct >= 0 ? "long" : "short"}
+        />
+        <StatTile label="總折數" value={String(result.oosTotalFolds)} />
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-border/60">
+        <table className="w-full min-w-[640px] font-mono text-xs">
+          <thead>
+            <tr className="border-b border-border/60 bg-secondary/30 text-left text-muted-foreground">
+              <th className="px-3 py-2 font-medium">Fold</th>
+              <th className="px-3 py-2 font-medium">測試期間</th>
+              <th className="px-3 py-2 font-medium">參數 (L/M/RR)</th>
+              <th className="px-3 py-2 text-right font-medium">策略報酬</th>
+              <th className="px-3 py-2 text-right font-medium">買入持有</th>
+              <th className="px-3 py-2 text-right font-medium">交易數</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.folds.map((f) => (
+              <tr key={f.fold} className="border-b border-border/40 last:border-0">
+                <td className="px-3 py-2">{f.fold}</td>
+                <td className="px-3 py-2 text-muted-foreground">{f.testRange}</td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {f.stLength}/{f.stMultiplier}/{f.stRiskReward}
+                </td>
+                <td className={cn("px-3 py-2 text-right font-semibold", f.testReturnPct >= 0 ? "text-long" : "text-short")}>
+                  {f.testReturnPct >= 0 ? "+" : ""}
+                  {f.testReturnPct.toFixed(2)}%
+                </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">
+                  {f.testBuyHoldPct >= 0 ? "+" : ""}
+                  {f.testBuyHoldPct.toFixed(2)}%
+                </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">{f.testNTrades}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {result.folds.some((f) => f.testNTrades < 15) && (
+        <p className="text-xs text-muted-foreground">
+          ⚠️ 部分折的交易數低於15筆統計門檻，單一折的數字本身統計力道不足，真正有意義的是「多折方向是否一致」，
+          不是任何一折的精確數字。
+        </p>
+      )}
     </div>
   )
 }

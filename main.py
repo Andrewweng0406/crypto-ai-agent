@@ -80,6 +80,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import ccxt.async_support as ccxt
 import feedparser
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -3747,10 +3748,28 @@ def _backtest_is_rate_limited(ip: str) -> bool:
     return False
 
 
+SUPERTREND_DEFAULT_LENGTH = 10
+SUPERTREND_DEFAULT_MULTIPLIER = 3.0
+SUPERTREND_DEFAULT_RISK_REWARD = 4.0
+# 2026-07-11 完整調查結論（見 ~/Desktop/量化回測/ 下的 walk_forward_validation.py、
+# rolling_walk_forward_long_only.py、rolling_walk_forward_multi_asset.py）：滾動式
+# Walk-Forward 驗證下，最佳參數每一折都不一樣，唯一相對穩定收斂的是 risk_reward
+# 傾向落在 4.0~4.5；只做多且僅在 BTCUSDT 驗證過，換 ETH/SOL 複利報酬趨近於零。
+SUPERTREND_CAVEAT = (
+    "SuperTrend 爆量狙擊手：2026-07-11 完整滾動式Walk-Forward+多資產驗證結論——"
+    "只有「只做多、僅BTCUSDT」版本通過樣本外驗證（5折滾動全數獲利，20個月複利約+15.6%），"
+    "換成ETH/SOL後複利報酬趨近於零；最佳參數在不同時間窗並不穩定，不建議依賴單次回測數字重倉。"
+)
+
+
 class BacktestRequest(BaseModel):
     symbol: str
-    strategy_name: Literal["crypto_donchian_1h", "meme_volume_spike", "us_stock_orb"]
+    strategy_name: Literal["crypto_donchian_1h", "meme_volume_spike", "us_stock_orb", "supertrend_btc_long"]
     days_range: int = 30
+    # 以下三個只在 strategy_name == "supertrend_btc_long" 時使用，其餘策略沒有可調參數
+    st_length: int = SUPERTREND_DEFAULT_LENGTH
+    st_multiplier: float = SUPERTREND_DEFAULT_MULTIPLIER
+    st_risk_reward: float = SUPERTREND_DEFAULT_RISK_REWARD
 
 
 class BacktestResponse(BaseModel):
@@ -3766,6 +3785,7 @@ class BacktestResponse(BaseModel):
     days_range_requested: int
     days_range_used: int      # 資料源實際能提供的天數（yfinance會被夾到60天），可能小於 requested
     data_source: str
+    strategy_caveat: Optional[str] = None  # 特定策略的額外誠實警語（目前只有supertrend_btc_long會有值）
 
 
 async def _backtest_fetch_crypto_history(symbol: str, days: int, timeframe: str) -> pd.DataFrame:
@@ -3791,7 +3811,14 @@ async def _backtest_fetch_crypto_history(symbol: str, days: int, timeframe: str)
                 if last_ts <= since:
                     break
                 since = last_ts + 1
-                if len(batch) < BACKTEST_CANDLES_PER_FETCH:
+                # 故意不用「這批筆數 < 請求的limit」當作「已經抓到最新」的判斷依據——
+                # 2026-07-11 實測 BingX 每一批穩定回傳299筆而不是limit的300筆（差1筆，
+                # 應該是since邊界含頭不含尾的計算方式跟limit互動的結果），用這個當終止
+                # 條件會導致從第二批開始每次都被誤判成「已到底」，靜悄悄地把所有超過
+                # 一批的請求截斷成只有最前面約300根K棒，不管使用者實際要求幾天。正確的
+                # 終止判斷只有「這批是空的」或「時間游標沒有前進」，加上這裡到「現在」
+                # 就停止，才不會因為交易所單批筆數的怪癖而默默少抓資料。
+                if since >= now_ms:
                     break
 
             df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -3861,6 +3888,138 @@ def _backtest_signals_meme_volume_spike(df: pd.DataFrame) -> pd.DataFrame:
     df["long_signal"] = spike & is_pump
     df["short_signal"] = spike & ~is_pump
     return df
+
+
+def _compute_supertrend_series(df: pd.DataFrame, length: int, multiplier: float) -> pd.DataFrame:
+    """
+    手刻 SuperTrend（跟本檔案其他指標同樣「純pandas實作，避免額外依賴ta-lib/pandas_ta」
+    的原則一致，見第4節說明）。2026-07-11 已用同一份BTCUSDT 4H歷史資料逐點比對過
+    pandas_ta.supertrend() 的輸出：6560根K棒裡方向完全零誤判、線值誤差在浮點數
+    捨入等級（<$0.6，價格是五位數美金），確認這份手刻版跟「SuperTrend爆量狙擊手」
+    策略整天驗證過程用的是同一顆指標，不是另一個相似但不同的版本。
+    """
+    df = df.copy()
+    prev_close = df["close"].shift(1)
+    tr = pd.concat(
+        [df["high"] - df["low"], (df["high"] - prev_close).abs(), (df["low"] - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / length, adjust=False).mean()  # Wilder's RMA，跟 pandas_ta 預設 atr_mamode="rma" 一致
+
+    hl2 = (df["high"] + df["low"]) / 2
+    matr = multiplier * atr
+    lb = (hl2 - matr).to_numpy(copy=True)
+    ub = (hl2 + matr).to_numpy(copy=True)
+
+    n = len(df)
+    direction = np.ones(n, dtype=int)
+    trend = np.full(n, np.nan)
+    close = df["close"].to_numpy()
+
+    for i in range(1, n):
+        if close[i] > ub[i - 1]:
+            direction[i] = 1
+        elif close[i] < lb[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+            if direction[i] > 0 and lb[i] < lb[i - 1]:
+                lb[i] = lb[i - 1]
+            if direction[i] < 0 and ub[i] > ub[i - 1]:
+                ub[i] = ub[i - 1]
+        trend[i] = lb[i] if direction[i] > 0 else ub[i]
+
+    df["st_line"] = trend
+    df["st_dir"] = direction
+    df.loc[df.index[:length], ["st_line", "st_dir"]] = np.nan
+    return df
+
+
+SUPERTREND_VOL_MA_LEN = 20
+SUPERTREND_VOL_MULT = 1.5  # 跟今天整天驗證用的預設值一致（見walk_forward_validation.py）
+
+# ⚠️ 故意不共用 calculate_leverage()／FIXED_RISK_PCT（那是給主流幣唐奇安/迷因當沖用的
+# 15%固定風險模型）。SuperTrend爆量狙擊手整天的驗證都是用 supertrend_sniper_backtest.py
+# 的 STConfig.risk_pct=2% 跑出來的——套用15%風險模型會讓槓桿暴增到MAX_LEVERAGE上限，
+# 報酬率被放大成完全不是同一個策略的數字（2026-07-11 實測：套用15%模型算出來的4個月
+# 報酬高達+212%，跟原始驗證的+8.55%對不起來，就是這個原因）。這裡用自己的2%風險常數，
+# 上限沿用 MAX_LEVERAGE 只是當一個保守的極端值防呆，不是主要決定因素。
+SUPERTREND_RISK_PCT = 2.0
+
+
+def _supertrend_leverage(stop_loss_pct: float) -> float:
+    if stop_loss_pct <= 0:
+        return 1.0
+    return max(1.0, min(MAX_LEVERAGE, SUPERTREND_RISK_PCT / stop_loss_pct))
+
+
+def _backtest_signals_supertrend_long(df: pd.DataFrame, length: int, multiplier: float) -> pd.DataFrame:
+    """
+    SuperTrend 爆量狙擊手（只做多版本）——2026-07-11 完整調查結論：多空雙向版本在
+    滾動式Walk-Forward裡不穩定（做空訊號在多頭市場穩定虧損，5折只做多後才做到
+    5/5全勝），且泛化性僅在BTCUSDT上驗證過（ETH/SOL滾動測試複利報酬僅約1%，
+    接近打平），因此這裡刻意不開放做空訊號、也不開放BTC以外的標的（見呼叫端限制）。
+    """
+    df = _compute_supertrend_series(df, length, multiplier)
+    flip_to_bull = (df["st_dir"] == 1) & (df["st_dir"].shift(1) == -1)
+    avg_volume = df["volume"].rolling(SUPERTREND_VOL_MA_LEN).mean()
+    vol_spike = df["volume"] > (avg_volume * SUPERTREND_VOL_MULT)
+    df["long_signal"] = (flip_to_bull & vol_spike).fillna(False)
+    df["short_signal"] = False
+    return df
+
+
+def _backtest_simulate_supertrend(df: pd.DataFrame, risk_reward: float, start_idx: int) -> List[dict]:
+    """
+    追蹤止損版模擬引擎：跟 _backtest_simulate_htf 的固定止損不同，止損逐根跟隨
+    st_line 移動——這是SuperTrend的核心特性，套用固定ATR止損會是另一個策略，
+    不是「SuperTrend爆量狙擊手」本身。win/loss用實際損益正負判斷（不是用「哪個
+    價位被打到」判斷），因為追蹤停損被觸發時常常已經在獲利區間，見今天的
+    diagnose_fold3.py 診斷紀錄。槓桿/手續費算法跟其他策略共用同一套
+    calculate_leverage()／BACKTEST_CRYPTO_FEE_PCT_PER_SIDE，維持整個沙盒單位一致。
+    """
+    trades: List[dict] = []
+    open_position: Optional[dict] = None
+
+    for i in range(start_idx, len(df)):
+        candle = df.iloc[i]
+        prev_st_line = df.iloc[i - 1]["st_line"] if i > 0 else None
+
+        if open_position is not None:
+            active_sl = float(prev_st_line) if prev_st_line is not None and pd.notna(prev_st_line) else open_position["initial_sl"]
+            hit_sl = candle["low"] <= active_sl
+            hit_tp = candle["high"] >= open_position["take_profit"]
+
+            if hit_sl or hit_tp:
+                exit_price = active_sl if hit_sl else open_position["take_profit"]
+                raw_pnl_pct = (exit_price - open_position["entry_price"]) / open_position["entry_price"] * 100
+                pnl_pct = raw_pnl_pct * open_position["leverage"]
+                fee_cost_pct = 2 * BACKTEST_CRYPTO_FEE_PCT_PER_SIDE * open_position["leverage"]
+                pnl_pct_after_fee = pnl_pct - fee_cost_pct
+                trades.append({
+                    "result": "WIN" if pnl_pct_after_fee > 0 else "LOSS",
+                    "pnl_pct_after_fee": pnl_pct_after_fee,
+                    "entry_timestamp": open_position["entry_timestamp"],
+                })
+                open_position = None
+            continue
+
+        if bool(candle["long_signal"]) and prev_st_line is not None and pd.notna(prev_st_line):
+            entry_price = float(candle["close"])
+            st_value = float(prev_st_line)
+            stop_dist = entry_price - st_value
+            if stop_dist <= 0:
+                continue
+            take_profit = entry_price + stop_dist * risk_reward
+            stop_loss_pct = stop_dist / entry_price * 100
+            if stop_loss_pct > MAX_SANE_STOP_LOSS_PCT:
+                continue
+            leverage = _supertrend_leverage(stop_loss_pct)
+            open_position = {
+                "entry_price": entry_price, "initial_sl": st_value, "take_profit": take_profit,
+                "leverage": leverage, "entry_timestamp": int(candle["timestamp"]),
+            }
+
+    return trades
 
 
 def _backtest_simulate_htf(df: pd.DataFrame, atr_sl_mult: float, rr: float, start_idx: int) -> List[dict]:
@@ -5049,11 +5208,14 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
     公開端點，靠IP限流（15次/小時，跟chatbot同規格）防止被用來刷爆外部交易所/
     yfinance API額度——這是後端唯一一個公開就會觸發大量外部API呼叫的端點。
 
-    只支援三個真的有歷史資料源的策略：
+    只支援四個真的有歷史資料源、也真的驗證過的策略：
       - crypto_donchian_1h／meme_volume_spike：ccxt歷史K線，symbol可傳裸代號
         （如 "WIF"，自動補成 WIF/USDT:USDT）或完整ccxt符號
       - us_stock_orb：yfinance 15分鐘K線，symbol傳美股代號（如 "NVDA"），
         天數會被夾到yfinance的真實上限60天
+      - supertrend_btc_long：ccxt 4H歷史K線，2026-07-11完整滾動式Walk-Forward+
+        多資產驗證過只有「只做多、僅BTCUSDT」版本站得住腳（見SUPERTREND_CAVEAT），
+        symbol強制鎖定BTC，傳其他代號會被拒絕，不開放做空。
 
     「gamma_squeeze」這種需要歷史期權OI/大單tick資料的策略沒有提供——這份歷史
     資料不存在，做出來會是編造的假回測，不會為了填滿一個下拉選單而這樣做。
@@ -5101,6 +5263,41 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
             data_source="ccxt (BingX/Binance/OKX)", **summary,
         )
 
+    if payload.strategy_name == "supertrend_btc_long":
+        if symbol_raw not in ("BTC", "BTCUSDT", "BTC/USDT:USDT"):
+            raise HTTPException(
+                status_code=400,
+                detail="SuperTrend 爆量狙擊手目前只驗證過 BTC，其他標的的結果沒有任何驗證基礎，不提供。",
+            )
+        ccxt_symbol = "BTC/USDT:USDT"
+        length, mult, rr = payload.st_length, payload.st_multiplier, payload.st_risk_reward
+        if not (3 <= length <= 50) or not (1.0 <= mult <= 6.0) or not (1.5 <= rr <= 6.0):
+            raise HTTPException(status_code=400, detail="參數超出合理範圍（length 3-50、multiplier 1.0-6.0、risk_reward 1.5-6.0）")
+
+        # 暖機緩衝：SuperTrend本身的ATR + 20根量能均線都需要額外歷史資料，天數換算成
+        # 4H根數再加緩衝（同donchian/meme那段暖機bug修法同樣道理）。
+        fetch_days = days_range + max(length, SUPERTREND_VOL_MA_LEN) * 4 // 24 + 5
+        try:
+            raw = await _backtest_fetch_crypto_history(ccxt_symbol, fetch_days, "4h")
+        except HTTPException:
+            raise
+        if raw.empty:
+            raise HTTPException(status_code=502, detail=f"抓不到 {ccxt_symbol} 的歷史K線")
+
+        days_ago_ms = pd.Timestamp.now(tz="UTC").value // 10**6 - days_range * 24 * 60 * 60 * 1000
+        signals = _backtest_signals_supertrend_long(raw, length, mult)
+        min_len = max(length, SUPERTREND_VOL_MA_LEN) + 2
+        all_trades = _backtest_simulate_supertrend(signals, rr, min_len)
+        trades = [t for t in all_trades if t["entry_timestamp"] >= days_ago_ms]
+
+        summary = _backtest_summarize(trades)
+        return BacktestResponse(
+            symbol=ccxt_symbol, strategy_name=payload.strategy_name,
+            sample_sufficient=summary["total_trades"] >= BACKTEST_MIN_TRADES_FOR_CONFIDENCE,
+            days_range_requested=payload.days_range, days_range_used=days_range,
+            data_source="ccxt (BingX/Binance/OKX)", strategy_caveat=SUPERTREND_CAVEAT, **summary,
+        )
+
     # us_stock_orb
     try:
         raw = await asyncio.to_thread(_backtest_fetch_yf_ohlcv, symbol_raw, days_range)
@@ -5120,6 +5317,147 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
         sample_sufficient=summary["total_trades"] >= BACKTEST_MIN_TRADES_FOR_CONFIDENCE,
         days_range_requested=payload.days_range, days_range_used=min(days_range, BACKTEST_YF_MAX_DAYS),
         data_source="yfinance", **summary,
+    )
+
+
+# --- 滾動式 Walk-Forward 驗證（目前只開放 supertrend_btc_long，見下方端點說明）---
+# 網格比本機當天手動跑的100組（4長度x5倍數x5RR）縮小成36組（4x3x3），純粹是為了
+# 讓公開HTTP端點能在合理時間內回應（reverse proxy/瀏覽器通常有30-60秒逾時），
+# 縮小網格不影響方法論本身的嚴謹度，只是候選參數變少。
+SUPERTREND_WF_LENGTHS = [7, 10, 14, 20]
+SUPERTREND_WF_MULTIPLIERS = [2.0, 3.0, 4.0]
+SUPERTREND_WF_RISK_REWARDS = [3.0, 4.0, 4.5]
+SUPERTREND_WF_TRAIN_MONTHS = 12
+SUPERTREND_WF_TEST_MONTHS = 4
+SUPERTREND_WF_HISTORY_DAYS = 365 * 3  # 需要跨好幾折訓練+測試窗，遠超過單次回測沙盒的180天上限
+SUPERTREND_WF_MIN_TRADES = 5  # 只做多後單折樣本天生偏薄（見今天實測6-8筆/折），門檻比單次回測沙盒低
+
+
+class BacktestWalkForwardFold(BaseModel):
+    fold: int
+    test_range: str
+    st_length: int
+    st_multiplier: float
+    st_risk_reward: float
+    test_return_pct: float
+    test_n_trades: int
+    test_buy_hold_pct: float
+
+
+class BacktestWalkForwardResponse(BaseModel):
+    strategy_name: str = "supertrend_btc_long"
+    symbol: str = "BTC/USDT:USDT"
+    folds: List[BacktestWalkForwardFold]
+    oos_profitable_folds: int
+    oos_total_folds: int
+    oos_avg_return_pct: float
+    oos_compounded_return_pct: float
+    caveat: str
+
+
+def _wf_buy_and_hold_pct(df: pd.DataFrame) -> float:
+    if len(df) < 2:
+        return 0.0
+    return float((df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100)
+
+
+def _wf_run_combo(df: pd.DataFrame, length: int, mult: float, rr: float) -> dict:
+    signals = _backtest_signals_supertrend_long(df, length, mult)
+    min_len = max(length, SUPERTREND_VOL_MA_LEN) + 2
+    trades = _backtest_simulate_supertrend(signals, rr, min_len)
+    summary = _backtest_summarize(trades)
+    return {
+        "st_length": length, "st_multiplier": mult, "st_risk_reward": rr,
+        "n_trades": summary["total_trades"],
+        "total_return_pct": summary["equity_curve"][-1] - 100.0 if summary["equity_curve"] else 0.0,
+    }
+
+
+@app.post("/api/backtest/walk-forward", response_model=BacktestWalkForwardResponse)
+async def run_backtest_walk_forward(request: Request) -> BacktestWalkForwardResponse:
+    """
+    滾動式 Walk-Forward（樣本外）驗證，目前只支援 supertrend_btc_long——這是2026-07-11
+    完整調查唯一通過驗證的策略/標的組合，見 SUPERTREND_CAVEAT。不像 /api/backtest
+    那樣「使用者挑策略挑天數」，這個端點固定跑同一套方法論：12個月訓練窗+4個月測試窗
+    一起往前滑動，每一折都只在該折訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新
+    起始資金，不延續權益）算出樣本外表現，藉此檢驗「訓練期最佳參數」是否只是過擬合、
+    換個時間窗就崩潰——跟單次回測完全是不同層次的驗證，公開展示更誠實。
+
+    公開端點，比 /api/backtest 更吃運算資源（要抓3年歷史K線+跑36組參數x多折網格搜尋），
+    IP限流比照同一組規則。
+    """
+    client_ip = _backtest_client_ip(request)
+    if _backtest_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {BACKTEST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
+
+    try:
+        full_df = await _backtest_fetch_crypto_history("BTC/USDT:USDT", SUPERTREND_WF_HISTORY_DAYS, "4h")
+    except HTTPException:
+        raise
+    if full_df.empty:
+        raise HTTPException(status_code=502, detail="抓不到 BTC/USDT:USDT 的歷史K線")
+
+    full_df["dt"] = pd.to_datetime(full_df["timestamp"], unit="ms", utc=True)
+    full_df = full_df.set_index("dt")
+    data_end = full_df.index[-1]
+
+    combos = [
+        (length, mult, rr)
+        for length in SUPERTREND_WF_LENGTHS
+        for mult in SUPERTREND_WF_MULTIPLIERS
+        for rr in SUPERTREND_WF_RISK_REWARDS
+    ]
+
+    folds: List[BacktestWalkForwardFold] = []
+    train_start = full_df.index[0]
+    fold_num = 0
+    while True:
+        train_end = train_start + pd.DateOffset(months=SUPERTREND_WF_TRAIN_MONTHS)
+        test_start = train_end
+        test_end = test_start + pd.DateOffset(months=SUPERTREND_WF_TEST_MONTHS)
+        if test_end > data_end:
+            break
+        fold_num += 1
+
+        train_slice = full_df.loc[(full_df.index >= train_start) & (full_df.index < train_end)]
+        test_slice = full_df.loc[(full_df.index >= test_start) & (full_df.index < test_end)]
+
+        train_results = [_wf_run_combo(train_slice, *c) for c in combos]
+        train_results = [r for r in train_results if r["n_trades"] >= SUPERTREND_WF_MIN_TRADES]
+
+        if not train_results:
+            train_start = train_start + pd.DateOffset(months=SUPERTREND_WF_TEST_MONTHS)
+            continue
+
+        best = max(train_results, key=lambda r: r["total_return_pct"])
+        test_result = _wf_run_combo(test_slice, best["st_length"], best["st_multiplier"], best["st_risk_reward"])
+
+        folds.append(BacktestWalkForwardFold(
+            fold=fold_num,
+            test_range=f"{test_start.date()} ~ {test_end.date()}",
+            st_length=best["st_length"], st_multiplier=best["st_multiplier"], st_risk_reward=best["st_risk_reward"],
+            test_return_pct=round(test_result["total_return_pct"], 2) if test_result["n_trades"] > 0 else 0.0,
+            test_n_trades=test_result["n_trades"],
+            test_buy_hold_pct=round(_wf_buy_and_hold_pct(test_slice), 2),
+        ))
+        train_start = train_start + pd.DateOffset(months=SUPERTREND_WF_TEST_MONTHS)
+
+    if not folds:
+        raise HTTPException(status_code=502, detail="資料長度不足以跑滿一折訓練+測試窗，請稍後再試")
+
+    oos_returns = [f.test_return_pct for f in folds]
+    profitable = sum(1 for r in oos_returns if r > 0)
+    compounded = 1.0
+    for r in oos_returns:
+        compounded *= (1 + r / 100)
+
+    return BacktestWalkForwardResponse(
+        folds=folds,
+        oos_profitable_folds=profitable,
+        oos_total_folds=len(folds),
+        oos_avg_return_pct=round(sum(oos_returns) / len(oos_returns), 2),
+        oos_compounded_return_pct=round((compounded - 1) * 100, 2),
+        caveat=SUPERTREND_CAVEAT,
     )
 
 

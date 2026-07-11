@@ -961,12 +961,15 @@ export function adaptAssistantBroadcasts(raw: BackendAssistantBroadcastResponse)
 // "gamma_squeeze" 這種需要歷史期權OI/大單tick的策略不提供，那份資料不存在。
 // ---------------------------------------------------------------------------
 
-export type BacktestStrategy = "crypto_donchian_1h" | "meme_volume_spike" | "us_stock_orb"
+export type BacktestStrategy = "crypto_donchian_1h" | "meme_volume_spike" | "us_stock_orb" | "supertrend_btc_long"
 
 export interface BacktestRequestBody {
   symbol: string
   strategy_name: BacktestStrategy
   days_range: number
+  st_length?: number
+  st_multiplier?: number
+  st_risk_reward?: number
 }
 
 export interface BackendBacktestResponse {
@@ -982,6 +985,7 @@ export interface BackendBacktestResponse {
   days_range_requested: number
   days_range_used: number
   data_source: string
+  strategy_caveat: string | null
 }
 
 export interface BacktestResult {
@@ -997,6 +1001,7 @@ export interface BacktestResult {
   daysRangeRequested: number
   daysRangeUsed: number
   dataSource: string
+  strategyCaveat: string | null
 }
 
 export function adaptBacktestResult(raw: BackendBacktestResponse): BacktestResult {
@@ -1013,6 +1018,78 @@ export function adaptBacktestResult(raw: BackendBacktestResponse): BacktestResul
     daysRangeRequested: raw.days_range_requested,
     daysRangeUsed: raw.days_range_used,
     dataSource: raw.data_source,
+    strategyCaveat: raw.strategy_caveat ?? null,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 🔁 滾動式 Walk-Forward 樣本外驗證（目前只支援 supertrend_btc_long，見後端
+// SUPERTREND_CAVEAT 說明）：跟上面的單次回測是完全不同層次的驗證方式。
+// ---------------------------------------------------------------------------
+
+export interface BackendWalkForwardFold {
+  fold: number
+  test_range: string
+  st_length: number
+  st_multiplier: number
+  st_risk_reward: number
+  test_return_pct: number
+  test_n_trades: number
+  test_buy_hold_pct: number
+}
+
+export interface BackendWalkForwardResponse {
+  strategy_name: string
+  symbol: string
+  folds: BackendWalkForwardFold[]
+  oos_profitable_folds: number
+  oos_total_folds: number
+  oos_avg_return_pct: number
+  oos_compounded_return_pct: number
+  caveat: string
+}
+
+export interface WalkForwardFold {
+  fold: number
+  testRange: string
+  stLength: number
+  stMultiplier: number
+  stRiskReward: number
+  testReturnPct: number
+  testNTrades: number
+  testBuyHoldPct: number
+}
+
+export interface WalkForwardResult {
+  strategyName: string
+  symbol: string
+  folds: WalkForwardFold[]
+  oosProfitableFolds: number
+  oosTotalFolds: number
+  oosAvgReturnPct: number
+  oosCompoundedReturnPct: number
+  caveat: string
+}
+
+export function adaptWalkForwardResult(raw: BackendWalkForwardResponse): WalkForwardResult {
+  return {
+    strategyName: raw.strategy_name,
+    symbol: raw.symbol,
+    folds: raw.folds.map((f) => ({
+      fold: f.fold,
+      testRange: f.test_range,
+      stLength: f.st_length,
+      stMultiplier: f.st_multiplier,
+      stRiskReward: f.st_risk_reward,
+      testReturnPct: f.test_return_pct,
+      testNTrades: f.test_n_trades,
+      testBuyHoldPct: f.test_buy_hold_pct,
+    })),
+    oosProfitableFolds: raw.oos_profitable_folds,
+    oosTotalFolds: raw.oos_total_folds,
+    oosAvgReturnPct: raw.oos_avg_return_pct,
+    oosCompoundedReturnPct: raw.oos_compounded_return_pct,
+    caveat: raw.caveat,
   }
 }
 
