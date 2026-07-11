@@ -52,6 +52,7 @@ import { NewsRadar } from "@/components/news-radar"
 import { SqueezeFeed } from "@/components/squeeze-feed"
 import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
 import { BacktestSandboxPanel } from "@/components/backtest-sandbox-panel"
+import { HighWinRatePanel } from "@/components/high-winrate-panel"
 import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
 import { WatchlistEditor } from "@/components/watchlist-editor"
@@ -66,7 +67,16 @@ const fetcher = (url: string) =>
 
 // 迷因雷達、迷因當沖、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣
 // 不同的資料形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics" | "backtest" | "overview"
+type TabKey =
+  | Universe
+  | "meme"
+  | "memeTrade"
+  | "usStock"
+  | "newsAgent"
+  | "optionsAnalytics"
+  | "backtest"
+  | "overview"
+  | "highWinRate"
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "⭐ 我的關注" },
@@ -77,6 +87,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "usStock", label: "美股 ORB" },
   { key: "optionsAnalytics", label: "📊 期權分析" },
   { key: "newsAgent", label: "新聞" },
+  { key: "highWinRate", label: "🎯 高勝率策略" },
   { key: "backtest", label: "🚀 回測沙盒" },
 ]
 
@@ -93,13 +104,21 @@ export function TradeDashboard() {
   const isOptionsMode = mode === "optionsAnalytics"
   const isBacktestMode = mode === "backtest"
   const isOverviewMode = mode === "overview"
+  const isHighWinRateMode = mode === "highWinRate"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode || isBacktestMode || isOverviewMode
+    isMemeMode ||
+    isMemeTradeMode ||
+    isUSStockMode ||
+    isNewsAgentMode ||
+    isOptionsMode ||
+    isBacktestMode ||
+    isOverviewMode ||
+    isHighWinRateMode
       ? null
       : `/api/signals?universe=${mode}`,
     fetcher,
@@ -182,7 +201,7 @@ export function TradeDashboard() {
   })
 
   const { data: rawLiquidationWalls } = useSWR<BackendLiquidationWallsResponse>(
-    mode === "scan" ? "/api/market/liquidation-walls" : null,
+    mode === "major" ? "/api/market/liquidation-walls" : null,
     fetcher,
     { refreshInterval: 30000 },
   )
@@ -275,7 +294,7 @@ export function TradeDashboard() {
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedMemeTrade = memeTradeCoins.find((c) => c.symbol === selectedSymbol) ?? null
 
-  const activeError = isBacktestMode
+  const activeError = isBacktestMode || isHighWinRateMode
     ? undefined
     : isOverviewMode
       ? (optionsGexError && usStocksError ? optionsGexError : undefined)
@@ -290,7 +309,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexError
                 : signalsError
-  const activeLoading = isBacktestMode
+  const activeLoading = isBacktestMode || isHighWinRateMode
     ? false
     : isOverviewMode
       ? optionsGexLoading || usStocksLoading
@@ -305,7 +324,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexLoading
                 : signalsLoading
-  const isConnected = isBacktestMode
+  const isConnected = isBacktestMode || isHighWinRateMode
     ? true
     : isOverviewMode
       ? (!optionsGexError && !!rawOptionsGex) || (!usStocksError && !!rawUSStocks)
@@ -583,6 +602,16 @@ export function TradeDashboard() {
             燈號代表本機監聽目前是否在線，離線時 GEX 主面板不受影響、只是大單清單不會有新資料。
           </p>
         </>
+      ) : isHighWinRateMode ? (
+        <>
+          <HighWinRatePanel />
+          <p className="text-center text-xs text-muted-foreground">
+            高勝率策略為獨立實盤監控功能：只在美股交易時段運作，即時跟蹤現價 vs SMA200/SMA5/RSI(2)，
+            <strong className="text-foreground">進場判斷永遠只認前一天已確認收盤的訊號</strong>
+            ，不會被盤中估算值誤導。均值回歸策略平均持倉1-3天，設計目標是高勝率+低回撤，不是跟大盤比總報酬。
+            單次回測/滾動式驗證請至「🚀 回測沙盒」分頁。
+          </p>
+        </>
       ) : isBacktestMode ? (
         <>
           <BacktestSandboxPanel />
@@ -595,17 +624,8 @@ export function TradeDashboard() {
       ) : (
         <>
           {mode === "major" ? (
-            <SymbolWatchlist signals={signals} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
-          ) : (
             <>
-              <OpportunityList
-                signals={signals}
-                trackedSymbols={rawSignals?.tracked_symbols ?? []}
-                selectedSymbol={selectedSymbol}
-                onSelect={setSelectedSymbol}
-                isLoading={signalsLoading}
-              />
-              <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
+              <SymbolWatchlist signals={signals} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
 
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between">
@@ -629,6 +649,17 @@ export function TradeDashboard() {
                 </div>
                 {selectedLiquidationWall && <LiquidationHeatmapChart data={selectedLiquidationWall} />}
               </div>
+            </>
+          ) : (
+            <>
+              <OpportunityList
+                signals={signals}
+                trackedSymbols={rawSignals?.tracked_symbols ?? []}
+                selectedSymbol={selectedSymbol}
+                onSelect={setSelectedSymbol}
+                isLoading={signalsLoading}
+              />
+              <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
             </>
           )}
 

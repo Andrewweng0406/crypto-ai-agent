@@ -5,11 +5,14 @@ import { AlertTriangle, Rocket, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   adaptBacktestResult,
+  adaptStockWalkForwardResult,
   adaptWalkForwardResult,
   type BacktestResult,
   type BacktestStrategy,
   type BackendBacktestResponse,
+  type BackendStockWalkForwardResponse,
   type BackendWalkForwardResponse,
+  type StockWalkForwardResult,
   type WalkForwardResult,
 } from "@/lib/signals"
 
@@ -22,6 +25,7 @@ const STRATEGY_SYMBOLS: Record<BacktestStrategy, string[]> = {
   meme_volume_spike: ["WIF", "DOGE", "PEPE", "SHIB", "BONK"],
   us_stock_orb: ["NVDA", "TSLA", "SPY", "SMCI", "SPCX"],
   supertrend_btc_long: ["BTC"],
+  stock_rsi2_meanrev: ["NVDA", "GOOGL", "MSFT", "META", "AAPL"],
 }
 
 const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
@@ -29,6 +33,7 @@ const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
   meme_volume_spike: "1H 爆量當沖（迷因幣）",
   us_stock_orb: "開盤區間突破（美股ORB）",
   supertrend_btc_long: "SuperTrend 爆量狙擊手（只做多，僅BTC）",
+  stock_rsi2_meanrev: "RSI(2) 均值回歸（高勝率，僅美股）",
 }
 
 const STRATEGY_MAX_DAYS: Record<BacktestStrategy, number> = {
@@ -36,6 +41,7 @@ const STRATEGY_MAX_DAYS: Record<BacktestStrategy, number> = {
   meme_volume_spike: 180,
   us_stock_orb: 60, // yfinance 15分鐘K線真實上限，見後端 BACKTEST_YF_MAX_DAYS 說明
   supertrend_btc_long: 180,
+  stock_rsi2_meanrev: 365 * 7, // 日線策略需要好幾年歷史，見後端 STOCK_MEANREV_MAX_DAYS_RANGE 說明
 }
 
 const fetcher = async (url: string, body: unknown): Promise<BackendBacktestResponse> => {
@@ -60,6 +66,15 @@ const walkForwardFetcher = async (): Promise<BackendWalkForwardResponse> => {
   return json
 }
 
+const stockWalkForwardFetcher = async (symbol: string): Promise<BackendStockWalkForwardResponse> => {
+  const res = await fetch(`/api/backtest/stock-walk-forward?symbol=${encodeURIComponent(symbol)}`, {
+    method: "POST",
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json?.detail ?? `請求失敗（${res.status}）`)
+  return json
+}
+
 // 📊 網頁端回測沙盒：把 backtest_optimizer.py 已經驗證過的邏輯搬上正式站台，
 // 只支援三個有真實歷史資料源的策略。公開端點，後端有IP限流（15次/小時）
 // 防止被用來刷爆外部交易所/yfinance API額度。
@@ -73,12 +88,15 @@ export function BacktestSandboxPanel() {
   const [mode, setMode] = useState<"single" | "walk_forward">("single")
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [wfResult, setWfResult] = useState<WalkForwardResult | null>(null)
+  const [stockWfResult, setStockWfResult] = useState<StockWalkForwardResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const availableSymbols = STRATEGY_SYMBOLS[strategy]
   const maxDays = STRATEGY_MAX_DAYS[strategy]
   const isSupertrend = strategy === "supertrend_btc_long"
+  const isStockMeanrev = strategy === "stock_rsi2_meanrev"
+  const hasWalkForward = isSupertrend || isStockMeanrev
 
   const handleStrategyChange = (next: BacktestStrategy) => {
     setStrategy(next)
@@ -87,6 +105,7 @@ export function BacktestSandboxPanel() {
     setMode("single")
     setResult(null)
     setWfResult(null)
+    setStockWfResult(null)
     setError(null)
   }
 
@@ -117,9 +136,15 @@ export function BacktestSandboxPanel() {
     setError(null)
     setResult(null)
     setWfResult(null)
+    setStockWfResult(null)
     try {
-      const raw = await walkForwardFetcher()
-      setWfResult(adaptWalkForwardResult(raw))
+      if (isStockMeanrev) {
+        const raw = await stockWalkForwardFetcher(symbol)
+        setStockWfResult(adaptStockWalkForwardResult(raw))
+      } else {
+        const raw = await walkForwardFetcher()
+        setWfResult(adaptWalkForwardResult(raw))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "滾動式驗證請求失敗")
     } finally {
@@ -156,8 +181,8 @@ export function BacktestSandboxPanel() {
         </div>
       </div>
 
-      {/* SuperTrend專屬：單次回測 vs 滾動式Walk-Forward驗證模式切換 */}
-      {isSupertrend && (
+      {/* 單次回測 vs 滾動式Walk-Forward驗證模式切換（SuperTrend/RSI2均值回歸專屬） */}
+      {hasWalkForward && (
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">驗證模式</span>
           <div className="flex w-fit gap-1 rounded-full border border-border/60 bg-secondary/30 p-1">
@@ -271,10 +296,10 @@ export function BacktestSandboxPanel() {
       ) : (
         <>
           <p className="text-xs text-muted-foreground">
-            固定跑同一套方法論：12個月訓練窗+4個月測試窗一起往前滑動，每一折都只在該折
-            訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新起始資金）算出樣本外表現——
-            跟單次回測是完全不同層次的驗證，不能自訂參數/天數。需要抓3年歷史K線+跑多折
-            網格搜尋，單次請求約需15-25秒。
+            {isStockMeanrev
+              ? "把整段~7年日線資料切成全期間/前50%/後50%/Q1-Q4四季，用同一組固定邏輯跑（沒有重新搜參數），檢查勝率是否每個時間切片都撐得住，不能自訂天數。"
+              : "固定跑同一套方法論：12個月訓練窗+4個月測試窗一起往前滑動，每一折都只在該折訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新起始資金）算出樣本外表現——跟單次回測是完全不同層次的驗證，不能自訂參數/天數。"}
+            {" "}單次請求約需15-25秒。
           </p>
           <button
             type="button"
@@ -299,6 +324,7 @@ export function BacktestSandboxPanel() {
 
       {result && !isLoading && <BacktestResultView result={result} />}
       {wfResult && !isLoading && <WalkForwardResultView result={wfResult} />}
+      {stockWfResult && !isLoading && <StockWalkForwardResultView result={stockWfResult} />}
     </div>
   )
 }
@@ -433,7 +459,65 @@ function WalkForwardResultView({ result }: { result: WalkForwardResult }) {
   )
 }
 
-function StatTile({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "long" | "short" | "neutral" }) {
+function StockWalkForwardResultView({ result }: { result: StockWalkForwardResult }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        {result.caveat}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2">
+        <StatTile
+          label="四季度是否全數過關（勝率≥50%）"
+          value={result.allQuartersPass50Pct ? "✅ 全數通過" : "⚠️ 有季度不過關"}
+          tone={result.allQuartersPass50Pct ? "long" : "short"}
+        />
+        <StatTile
+          label="最低單季勝率"
+          value={`${result.minQuarterWinRate.toFixed(1)}%`}
+          tone={result.minQuarterWinRate >= 50 ? "long" : "short"}
+        />
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-border/60">
+        <table className="w-full min-w-[600px] font-mono text-xs">
+          <thead>
+            <tr className="border-b border-border/60 bg-secondary/30 text-left text-muted-foreground">
+              <th className="px-3 py-2 font-medium">切片</th>
+              <th className="px-3 py-2 font-medium">期間</th>
+              <th className="px-3 py-2 text-right font-medium">交易數</th>
+              <th className="px-3 py-2 text-right font-medium">勝率</th>
+              <th className="px-3 py-2 text-right font-medium">總報酬</th>
+              <th className="px-3 py-2 text-right font-medium">獲利因子</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.folds.map((f) => (
+              <tr key={f.fold} className="border-b border-border/40 last:border-0">
+                <td className="px-3 py-2 font-semibold">{f.fold}</td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {f.start} ~ {f.end}
+                </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">{f.totalTrades}</td>
+                <td className={cn("px-3 py-2 text-right font-semibold", f.winRate >= 50 ? "text-long" : "text-short")}>
+                  {f.winRate.toFixed(1)}%
+                </td>
+                <td className={cn("px-3 py-2 text-right", f.totalReturnPct >= 0 ? "text-long" : "text-short")}>
+                  {f.totalReturnPct >= 0 ? "+" : ""}
+                  {f.totalReturnPct.toFixed(2)}%
+                </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">{f.profitFactor.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+export function StatTile({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "long" | "short" | "neutral" }) {
   return (
     <div className="flex flex-col gap-1 rounded-xl border border-border/60 bg-secondary/30 px-4 py-3">
       <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
@@ -451,7 +535,7 @@ function StatTile({ label, value, tone = "neutral" }: { label: string; value: st
   )
 }
 
-function WinRateRing({ winRate }: { winRate: number }) {
+export function WinRateRing({ winRate }: { winRate: number }) {
   const size = 96
   const strokeWidth = 8
   const radius = (size - strokeWidth) / 2
@@ -485,7 +569,7 @@ function WinRateRing({ winRate }: { winRate: number }) {
   )
 }
 
-function EquityCurveChart({ equityCurve, isProfitable }: { equityCurve: number[]; isProfitable: boolean }) {
+export function EquityCurveChart({ equityCurve, isProfitable }: { equityCurve: number[]; isProfitable: boolean }) {
   const width = 800
   const height = 180
   const padX = 8

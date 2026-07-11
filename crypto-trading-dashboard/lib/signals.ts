@@ -922,7 +922,7 @@ export function adaptMemeTradeHistory(raw: BackendMemeTradeHistoryResponse): {
 // 迷因當沖新訊號跟期權大單。點擊跑馬燈才會把訊息送進 /api/chat 真的觸發LLM。
 // ---------------------------------------------------------------------------
 
-export type AssistantBroadcastKind = "meme_trade" | "whale_sweep"
+export type AssistantBroadcastKind = "meme_trade" | "whale_sweep" | "squeeze_mode" | "rsi2_meanrev"
 
 export interface BackendAssistantBroadcastItem {
   id: string
@@ -961,7 +961,12 @@ export function adaptAssistantBroadcasts(raw: BackendAssistantBroadcastResponse)
 // "gamma_squeeze" 這種需要歷史期權OI/大單tick的策略不提供，那份資料不存在。
 // ---------------------------------------------------------------------------
 
-export type BacktestStrategy = "crypto_donchian_1h" | "meme_volume_spike" | "us_stock_orb" | "supertrend_btc_long"
+export type BacktestStrategy =
+  | "crypto_donchian_1h"
+  | "meme_volume_spike"
+  | "us_stock_orb"
+  | "supertrend_btc_long"
+  | "stock_rsi2_meanrev"
 
 export interface BacktestRequestBody {
   symbol: string
@@ -1091,6 +1096,244 @@ export function adaptWalkForwardResult(raw: BackendWalkForwardResponse): WalkFor
     oosCompoundedReturnPct: raw.oos_compounded_return_pct,
     caveat: raw.caveat,
   }
+}
+
+// ---------------------------------------------------------------------------
+// 🎯 高勝率股票策略：RSI(2) 均值回歸專用的穩健性驗證（季度分折，不是訓練/測試）
+// ---------------------------------------------------------------------------
+
+export interface BackendStockWalkForwardFold {
+  fold: string
+  start: string
+  end: string
+  total_trades: number
+  win_rate: number
+  total_return_pct: number
+  profit_factor: number
+  max_dd_pct: number
+}
+
+export interface BackendStockWalkForwardResponse {
+  strategy_name: string
+  symbol: string
+  folds: BackendStockWalkForwardFold[]
+  all_quarters_pass_50pct: boolean
+  min_quarter_win_rate: number
+  caveat: string
+}
+
+export interface StockWalkForwardFold {
+  fold: string
+  start: string
+  end: string
+  totalTrades: number
+  winRate: number
+  totalReturnPct: number
+  profitFactor: number
+  maxDdPct: number
+}
+
+export interface StockWalkForwardResult {
+  strategyName: string
+  symbol: string
+  folds: StockWalkForwardFold[]
+  allQuartersPass50Pct: boolean
+  minQuarterWinRate: number
+  caveat: string
+}
+
+export function adaptStockWalkForwardResult(raw: BackendStockWalkForwardResponse): StockWalkForwardResult {
+  return {
+    strategyName: raw.strategy_name,
+    symbol: raw.symbol,
+    folds: raw.folds.map((f) => ({
+      fold: f.fold,
+      start: f.start,
+      end: f.end,
+      totalTrades: f.total_trades,
+      winRate: f.win_rate,
+      totalReturnPct: f.total_return_pct,
+      profitFactor: f.profit_factor,
+      maxDdPct: f.max_dd_pct,
+    })),
+    allQuartersPass50Pct: raw.all_quarters_pass_50pct,
+    minQuarterWinRate: raw.min_quarter_win_rate,
+    caveat: raw.caveat,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 🎯 RSI(2) 均值回歸實盤監控（獨立模塊）：市場時段內即時跟蹤現價 vs SMA200/SMA5/
+// RSI(2)，訊號永遠只認前一天已確認收盤的條件，不會被盤中估算值誤導。
+// ---------------------------------------------------------------------------
+
+export interface BackendRSI2StockResponse {
+  symbol: string
+  display_name: string
+  current_price: number | null
+  day_change_pct: number | null
+  sma200: number | null
+  sma5: number | null
+  rsi2: number | null
+  rsi2_is_confirmed: boolean
+  status: "NO_SIGNAL" | "OPEN"
+  entry_price: number | null
+  stop_loss: number | null
+  opened_at: string | null
+  updated_at: string | null
+}
+
+export interface BackendRSI2ListResponse {
+  market_session: "OPEN" | "CLOSED"
+  stocks: BackendRSI2StockResponse[]
+  caveat: string
+  updated_at: string
+}
+
+export interface RSI2StockState {
+  symbol: string
+  displayName: string
+  currentPrice: number | null
+  dayChangePct: number | null
+  sma200: number | null
+  sma5: number | null
+  rsi2: number | null
+  rsi2IsConfirmed: boolean
+  status: "NO_SIGNAL" | "OPEN"
+  entryPrice: number | null
+  stopLoss: number | null
+  openedAt: string | null
+  updatedAt: string | null
+}
+
+export interface RSI2ListData {
+  marketSession: "OPEN" | "CLOSED"
+  stocks: RSI2StockState[]
+  caveat: string
+}
+
+export function adaptRSI2List(raw: BackendRSI2ListResponse): RSI2ListData {
+  return {
+    marketSession: raw.market_session,
+    caveat: raw.caveat,
+    stocks: raw.stocks.map((s) => ({
+      symbol: s.symbol,
+      displayName: s.display_name,
+      currentPrice: s.current_price,
+      dayChangePct: s.day_change_pct,
+      sma200: s.sma200,
+      sma5: s.sma5,
+      rsi2: s.rsi2,
+      rsi2IsConfirmed: s.rsi2_is_confirmed,
+      status: s.status,
+      entryPrice: s.entry_price,
+      stopLoss: s.stop_loss,
+      openedAt: s.opened_at,
+      updatedAt: s.updated_at,
+    })),
+  }
+}
+
+export interface BackendRSI2HistoryItem {
+  symbol: string
+  display_name: string
+  side: string
+  entry_price: number
+  exit_price: number
+  stop_loss: number
+  result: string
+  pnl_pct: number
+  opened_at: string
+  closed_at: string
+  exit_reason: string
+}
+
+export interface BackendRSI2HistoryResponse {
+  trades: BackendRSI2HistoryItem[]
+  stats: { total_trades: number; wins: number; losses: number; win_rate_pct: number }
+}
+
+export interface RSI2HistoryItem {
+  symbol: string
+  displayName: string
+  side: string
+  entryPrice: number
+  exitPrice: number
+  stopLoss: number
+  result: string
+  pnlPct: number
+  openedAt: string
+  closedAt: string
+  exitReason: string
+}
+
+export interface RSI2HistoryData {
+  trades: RSI2HistoryItem[]
+  stats: { totalTrades: number; wins: number; losses: number; winRatePct: number }
+}
+
+export function adaptRSI2History(raw: BackendRSI2HistoryResponse): RSI2HistoryData {
+  return {
+    trades: raw.trades.map((t) => ({
+      symbol: t.symbol,
+      displayName: t.display_name,
+      side: t.side,
+      entryPrice: t.entry_price,
+      exitPrice: t.exit_price,
+      stopLoss: t.stop_loss,
+      result: t.result,
+      pnlPct: t.pnl_pct,
+      openedAt: t.opened_at,
+      closedAt: t.closed_at,
+      exitReason: t.exit_reason,
+    })),
+    stats: {
+      totalTrades: raw.stats.total_trades,
+      wins: raw.stats.wins,
+      losses: raw.stats.losses,
+      winRatePct: raw.stats.win_rate_pct,
+    },
+  }
+}
+
+export interface BackendRSI2ChartPoint {
+  timestamp: number
+  open: number
+  high: number
+  low: number
+  close: number
+  sma200: number | null
+  sma5: number | null
+  rsi2: number | null
+}
+
+export interface BackendRSI2ChartResponse {
+  symbol: string
+  points: BackendRSI2ChartPoint[]
+}
+
+export interface RSI2ChartPoint {
+  timestamp: number
+  open: number
+  high: number
+  low: number
+  close: number
+  sma200: number | null
+  sma5: number | null
+  rsi2: number | null
+}
+
+export function adaptRSI2Chart(raw: BackendRSI2ChartResponse): RSI2ChartPoint[] {
+  return raw.points.map((p) => ({
+    timestamp: p.timestamp,
+    open: p.open,
+    high: p.high,
+    low: p.low,
+    close: p.close,
+    sma200: p.sma200,
+    sma5: p.sma5,
+    rsi2: p.rsi2,
+  }))
 }
 
 // ---------------------------------------------------------------------------

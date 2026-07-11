@@ -139,11 +139,14 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_crypto_smart_money",
-    description: "查詢指定加密貨幣合約的聰明錢數據：資金費率、未平倉量變化、大戶多空比、偏向判斷。",
+    description:
+      "查詢指定加密貨幣合約的聰明錢數據：資金費率、未平倉量變化、大戶多空比、偏向判斷。" +
+      "⚠️ 只追蹤主流幣 BTC/ETH/SOL，其他標的（包含WIF/DOGE等迷因幣）沒有這份數據，" +
+      "呼叫前先確認symbol是這三檔之一，否則不用呼叫、直接跟使用者說明這份數據只涵蓋主流幣即可。",
     input_schema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "ccxt格式合約符號，例如 BTC/USDT:USDT" },
+        symbol: { type: "string", description: "ccxt格式合約符號，僅限 BTC/USDT:USDT、ETH/USDT:USDT、SOL/USDT:USDT" },
       },
       required: ["symbol"],
     },
