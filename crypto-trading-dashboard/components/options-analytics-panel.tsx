@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { type OptionsGexData, type WhaleSweepItem, formatPrice } from "@/lib/signals"
 import { GexWallChart } from "@/components/gex-wall-chart"
 import { WhaleSweepStream } from "@/components/whale-sweep-stream"
+import { WatchlistEditor } from "@/components/watchlist-editor"
 
 interface OptionsAnalyticsPanelProps {
   underlyings: OptionsGexData[]
@@ -12,6 +13,7 @@ interface OptionsAnalyticsPanelProps {
   moomooOnline: boolean
   isLoading: boolean
   whaleSweepLoading: boolean
+  initialSymbol?: string | null // 從「⭐ 我的關注」總覽頁點卡片跳轉過來時，帶入指定要選中的標的
 }
 
 export function OptionsAnalyticsPanel({
@@ -21,8 +23,9 @@ export function OptionsAnalyticsPanel({
   moomooOnline,
   isLoading,
   whaleSweepLoading,
+  initialSymbol = null,
 }: OptionsAnalyticsPanelProps) {
-  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(initialSymbol)
 
   useEffect(() => {
     if (underlyings.length === 0) {
@@ -68,6 +71,13 @@ export function OptionsAnalyticsPanel({
           {moomooOnline ? "● Live：本機大單數據即時同步" : "● Standby：本機大單監聽已離線"}
         </div>
       </div>
+
+      <WatchlistEditor
+        watchlistUrl="/api/options/watchlist"
+        dataUrl="/api/options/gex"
+        placeholder="輸入美股代號，例如 AAPL"
+        maxSize={30}
+      />
 
       <div className="flex flex-wrap gap-3">
         {underlyings.map((u) => {

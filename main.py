@@ -275,6 +275,9 @@ AGGREGATED_OI_CIRCUIT_BREAKER_THRESHOLD = 2  # 同一輪掃描內連續失敗達
 # 這個目前完全沒有回測過，勝率未知，純粹照規格實作，請勿依賴其結果重倉交易。
 # 標的是 BingX 的代幣化美股永續合約商品（NCSK 開頭），24 小時都能報價，
 # 但 ORB 策略邏輯只在真正的美股交易時段內運作。
+# 這份字典現在只當「伺服器全新啟動、還沒有快照」時的預設種子清單使用——實際
+# 運作中的清單是 state.us_stock_watchlist（動態、使用者可增刪，見該欄位定義處
+# 說明），所有背景迴圈/端點都改讀 state.us_stock_watchlist，不再直接讀這個常數。
 US_STOCK_SYMBOLS: Dict[str, str] = {
     "TSLA": "NCSKTSLA2USD/USDT:USDT",
     "NVDA": "NCSKNVDA2USD/USDT:USDT",
@@ -282,7 +285,6 @@ US_STOCK_SYMBOLS: Dict[str, str] = {
     "SOXL": "NCSKSOXL2USD/USDT:USDT",
     "TQQQ": "NCSKTQQQ2USD/USDT:USDT",
 }
-US_STOCK_DISPLAY_BY_SYMBOL: Dict[str, str] = {v: k for k, v in US_STOCK_SYMBOLS.items()}
 
 # 大盤濾網參考指數：那斯達克100代幣化指數商品（TQQQ/SOXL/NVDA 這幾檔跟科技股
 # 大盤連動性高，用這個當代表；之後想換 SP500 只要改這個常數即可）
@@ -334,7 +336,9 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
 # 功能無法用這個資料源實作（見該檔案說明），前端已有對應的「不支援」畫面。
 OPTIONS_ANALYTICS_ENABLED = os.environ.get("OPTIONS_ANALYTICS_ENABLED", "true").strip().lower() == "true"
 
-# 強制首批監控標的（yfinance 直接用一般美股代號，不需要交易所前綴）
+# 這份字典同樣只當「伺服器全新啟動、還沒有快照」時的預設種子清單使用——實際
+# 運作中的清單是 state.options_watchlist（動態，見該欄位定義處說明）。
+# （yfinance 直接用一般美股代號，不需要交易所前綴）
 OPTIONS_UNDERLYINGS: Dict[str, str] = {
     "NVDA": "NVDA",
     "TSLA": "TSLA",
@@ -345,6 +349,12 @@ OPTIONS_UNDERLYINGS: Dict[str, str] = {
 
 OPTIONS_SCAN_INTERVAL_SECONDS = 60   # 美股盤中每分鐘重新拉一次期權鏈（OI本身是每日快照，但用即時現貨價重算Gamma仍會變動）
 OPTIONS_CLOSED_POLL_SECONDS = 600    # 非交易時段時，多久檢查一次「開盤了沒」
+
+# 期權大單即時流（見 POST /api/us/whale-sweep）目前只涵蓋使用者本機
+# moomoo_whale_sweep_local.py 這支腳本裡手動訂閱的標的——那支腳本是純本機
+# 工具、不隨這裡的自選清單自動同步，兩邊代號集合需要手動維持一致（新增/移除
+# 監控標的、也想要大單即時流的話，記得同步改那支腳本的 OPTION_TICKERS 字典）。
+MOOMOO_WHALE_SWEEP_TICKERS = {"NVDA", "TSLA", "SPY", "SMCI", "SPCX"}
 OPTIONS_RISK_FREE_RATE = 0.045       # Black-Scholes 無風險利率，近似目前美國短期公債殖利率，非即時查詢
 OPTIONS_STRIKE_WINDOW_PCT = 0.30     # GEX 牆只保留現貨上下 30% 內的履約價，太遠價外合約OI通常稀薄、對整體GEX貢獻可忽略，避免圖表被雜訊拉爆
 OPTIONS_GEX_HISTORY_MAX_LEN = 1      # 目前只保留「最新一份」GEX剖面，不像K線需要保留歷史序列
@@ -638,7 +648,7 @@ class OptionsGexResponse(BaseModel):
     expiry: Optional[str] = None
     gamma_flip_strike: Optional[float] = None  # ⚡ Gamma 擠壓臨界點；None代表這份剖面內沒有偵測到正負轉折
     points: List[OptionsGexPoint] = []
-    whale_sweep_supported: Optional[bool] = None  # 大單即時流來自本機 Moomoo 橋接，涵蓋全部監控標的，恆為 True；見 OptionsState 說明
+    whale_sweep_supported: Optional[bool] = None  # 大單即時流來自本機 Moomoo 橋接，只涵蓋 MOOMOO_WHALE_SWEEP_TICKERS 固定集合內的代號
     updated_at: Optional[str] = None
 
 
@@ -978,11 +988,11 @@ class OptionsState:
         self.expiry: Optional[str] = None
         self.gex_points: List[dict] = []  # [{"strike","call_gex","put_gex","net_gex"}, ...]，依履約價由小到大排序
         self.gamma_flip_strike: Optional[float] = None
-        # GEX剖面本身資料源(yfinance)沒有逐筆成交數據，但大單即時流现在改由使用者
-        # 本機執行的 moomoo_whale_sweep_local.py 主動回傳（見 POST /api/us/whale-sweep），
-        # 涵蓋 OPTIONS_UNDERLYINGS 全部5檔，恆為 True；是否「現在有沒有在同步」是另一個
-        # 獨立概念，交給 moomoo_online 心跳燈號表示，不用這個欄位混著表達。
-        self.whale_sweep_supported: bool = True
+        # GEX剖面本身資料源(yfinance)沒有逐筆成交數據，大單即時流改由使用者本機執行
+        # 的 moomoo_whale_sweep_local.py 主動回傳（見 POST /api/us/whale-sweep）——
+        # 這是否支援純粹取決於代號在不在 MOOMOO_WHALE_SWEEP_TICKERS 這份固定集合裡
+        # （自選清單可動態增刪，但那支本機腳本的訂閱清單不會跟著自動變），故意不當
+        # 這個物件的欄位存，直接在 get_options_gex() 用代號比對常數集合即時算。
         self.last_updated: Optional[str] = None
 
 
@@ -1048,6 +1058,13 @@ class AppState:
         # 💥 爆倉密度清算牆（獨立狀態；本機 liquidation_listener.py 主動回傳彙總後
         # 的快照，這裡只是存最新一份，不是逐筆累積——累積本身已經在本機SQLite完成）
         self.liquidation_walls: Dict[str, dict] = {}
+
+        # ⭐ 使用者自訂關注清單（動態、可持久化，取代原本寫死的 OPTIONS_UNDERLYINGS /
+        # US_STOCK_SYMBOLS 常數）：display_name -> 資料源代號。預設值等於這兩個模塊
+        # 原本的強制監控標的，使用者可透過 /api/options/watchlist、
+        # /api/us-stock/watchlist 動態增刪，變動會存進狀態快照（見 save_state_snapshot）。
+        self.options_watchlist: Dict[str, str] = dict(OPTIONS_UNDERLYINGS)
+        self.us_stock_watchlist: Dict[str, str] = dict(US_STOCK_SYMBOLS)
 
     def get_options_state(self, symbol: str) -> OptionsState:
         if symbol not in self.options_states:
@@ -2143,10 +2160,14 @@ async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) 
 
 
 async def flatten_all_us_stock_positions(exchange_pool: dict) -> None:
-    """收盤瞬間對所有還有部位的標的做一次批次強制平倉，見 force_close_us_stock_signal。"""
+    """
+    收盤瞬間對所有還有部位的標的做一次批次強制平倉，見 force_close_us_stock_signal。
+    故意掃「所有目前有狀態的標的」而不是「目前關注清單」——使用者可能在部位開著
+    的時候把該標的從關注清單移除，這裡仍要照樣幫忙平倉，不能因為清單異動就漏平。
+    """
     async with state.lock:
         open_symbols = [
-            sym for sym in US_STOCK_SYMBOLS.values() if state.get_us_stock_state(sym).open_signal is not None
+            sym for sym, s in state.us_stock_states.items() if s.open_signal is not None
         ]
     if not open_symbols:
         return
@@ -2202,7 +2223,8 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
                 continue
 
             was_active = True
-            symbols = list(US_STOCK_SYMBOLS.values())
+            watchlist_snapshot = dict(state.us_stock_watchlist)
+            symbols = list(watchlist_snapshot.values())
             try:
                 prices = await fetch_tickers_batch(exchange_pool, symbols)
             except Exception as exc:  # noqa: BLE001
@@ -2226,7 +2248,7 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
             now_monotonic = time.monotonic()
             if now_monotonic - last_scan_at >= US_STOCK_SCAN_INTERVAL_SECONDS:
                 await refresh_us_market_regime(exchange_pool)
-                for display_name, ticker_symbol in US_STOCK_SYMBOLS.items():
+                for display_name, ticker_symbol in watchlist_snapshot.items():
                     await scan_us_stock_orb(exchange_pool, display_name, ticker_symbol)
                 last_scan_at = now_monotonic
 
@@ -2581,7 +2603,9 @@ async def fetch_news_entries() -> List[dict]:
 _CRYPTO_NEWS_TICKERS = {s.split("/")[0].upper() for s in MAJOR_SYMBOLS} | {
     s.split("/")[0].upper() for s in MEME_CANDIDATE_SYMBOLS
 }
-_US_STOCK_NEWS_TICKERS = {k.upper() for k in US_STOCK_SYMBOLS} | {k.upper() for k in OPTIONS_UNDERLYINGS}
+def _us_stock_news_tickers() -> set:
+    """兩個模塊的目前關注清單皆為動態、可被使用者增刪，這裡即時讀取而非用啟動時的固定集合。"""
+    return {k.upper() for k in state.us_stock_watchlist} | {k.upper() for k in state.options_watchlist}
 # 常見大型加密貨幣代號兜底：新聞裡提到的標的不一定剛好落在本系統監控名單內
 # （例如新聞提到 XRP，但系統沒有監控 XRP），沒對到已知清單時用這份常見清單
 # 再判斷一次，避免明顯是加密貨幣的新聞被誤分類成美股。
@@ -2596,7 +2620,7 @@ def _classify_news_category(symbols: List[str]) -> Literal["crypto", "us_stock"]
     upper_symbols = [s.upper() for s in symbols]
     if any(s in _CRYPTO_NEWS_TICKERS or s in _COMMON_CRYPTO_TICKERS for s in upper_symbols):
         return "crypto"
-    if any(s in _US_STOCK_NEWS_TICKERS for s in upper_symbols):
+    if any(s in _us_stock_news_tickers() for s in upper_symbols):
         return "us_stock"
     # 兩邊都沒對到已知標的：新聞來源本身以財經新聞為主，沒有明確加密貨幣訊號時
     # 倒向美股分類較合理，不會漏掉大部分泛財經新聞。
@@ -2618,7 +2642,7 @@ def _match_open_signals_for_symbol(ticker: str) -> List[dict]:
         if base == ticker:
             matches.append({"kind": "crypto", "display": symbol, "side": sym_state.open_signal["side"], "symbol": symbol})
 
-    for display_name, ticker_symbol in US_STOCK_SYMBOLS.items():
+    for display_name, ticker_symbol in state.us_stock_watchlist.items():
         if display_name.upper() != ticker:
             continue
         us_state = state.us_stock_states.get(ticker_symbol)
@@ -3042,7 +3066,7 @@ async def scan_options_analytics() -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
     any_success = False
 
-    for display_name, ticker_symbol in OPTIONS_UNDERLYINGS.items():
+    for display_name, ticker_symbol in dict(state.options_watchlist).items():
         try:
             spot = await yfinance_client.get_spot_price(ticker_symbol)
             expiry = await yfinance_client.get_nearest_expiry(ticker_symbol)
@@ -3546,8 +3570,8 @@ def save_state_snapshot() -> None:
                     "expiry": o.expiry,
                     "gex_points": o.gex_points,
                     "gamma_flip_strike": o.gamma_flip_strike,
-                    # whale_sweep_supported 故意不存：現在是固定為 True 的能力旗標，不是
-                    # 真正的動態狀態，存舊快照反而會讓舊版(False)的值卡住蓋掉新的預設值。
+                    # whale_sweep_supported 不是 OptionsState 的欄位，見該類別定義處說明：
+                    # 現在是即時用 MOOMOO_WHALE_SWEEP_TICKERS 常數算的，沒有狀態要存。
                 }
                 for symbol, o in state.options_states.items()
             },
@@ -3564,6 +3588,8 @@ def save_state_snapshot() -> None:
             "meme_trade_history": list(state.meme_trade_history),
             "assistant_broadcasts": list(state.assistant_broadcasts),
             "liquidation_walls": state.liquidation_walls,
+            "options_watchlist": state.options_watchlist,
+            "us_stock_watchlist": state.us_stock_watchlist,
         }
         os.makedirs(LOG_DIR, exist_ok=True)
         tmp_path = STATE_SNAPSHOT_PATH + ".tmp"
@@ -3640,8 +3666,6 @@ def load_state_snapshot() -> None:
             opt_state.expiry = data.get("expiry")
             opt_state.gex_points = data.get("gex_points", [])
             opt_state.gamma_flip_strike = data.get("gamma_flip_strike")
-            # whale_sweep_supported 不從快照恢復，見 save_state_snapshot 的說明，
-            # 沿用 get_options_state() 剛建立時的預設值（True）。
 
         state.whale_sweep_feed.extend(snapshot.get("whale_sweep_feed", []))
 
@@ -3654,6 +3678,14 @@ def load_state_snapshot() -> None:
         state.meme_trade_history.extend(snapshot.get("meme_trade_history", []))
         state.assistant_broadcasts.extend(snapshot.get("assistant_broadcasts", []))
         state.liquidation_walls.update(snapshot.get("liquidation_walls", {}))
+
+        # 只在快照真的存了非空清單時才覆蓋預設值——舊版快照（這個功能上線前存的）
+        # 沒有這兩個欄位，.get(...,{}) 會是空字典，若直接覆蓋會把使用者一個標的都
+        # 沒有的空清單誤當成「有效狀態」，蓋掉 AppState.__init__ 剛設好的預設5檔。
+        if snapshot.get("options_watchlist"):
+            state.options_watchlist = snapshot["options_watchlist"]
+        if snapshot.get("us_stock_watchlist"):
+            state.us_stock_watchlist = snapshot["us_stock_watchlist"]
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
         restored_us_stock_positions = sum(
@@ -4060,6 +4092,92 @@ def _backtest_summarize(trades: List[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 8.6 ⭐ 自選監控清單（動態Watchlist：期權分析 + 美股ORB，取代原本寫死5檔清單）
+# ---------------------------------------------------------------------------
+# 2026-07-11 實測：yfinance 抓一檔標的（現貨價+到期日+期權鏈）平均只要約0.3秒，
+# 15檔序列掃描總共5秒，遠低於 OPTIONS_SCAN_INTERVAL_SECONDS(60秒)，證實開放
+# 使用者自訂沒有效能疑慮。美股ORB的標的池則是 BingX 交易所本身既有的238檔
+# 代幣化個股+14檔指數（NCSK/NCSI開頭），可直接從已載入的市場資料搜尋，不需要
+# 額外打API。兩邊都設一個防濫用上限，並沿用回測沙盒同一套IP限流精神。
+
+OPTIONS_WATCHLIST_MAX_SIZE = 30   # 30檔序列掃描約需10秒，仍遠低於60秒掃描週期
+US_STOCK_WATCHLIST_MAX_SIZE = 30  # 批次報價本身沒有這個量級的效能疑慮，跟期權那邊統一上限方便理解
+
+WATCHLIST_RATE_LIMIT_MAX_REQUESTS = 20
+WATCHLIST_RATE_LIMIT_WINDOW_SECONDS = 3600
+_watchlist_rate_limit_log: Dict[str, List[float]] = {}
+
+
+def _watchlist_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _watchlist_is_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    timestamps = [t for t in _watchlist_rate_limit_log.get(ip, []) if now - t < WATCHLIST_RATE_LIMIT_WINDOW_SECONDS]
+    if len(timestamps) >= WATCHLIST_RATE_LIMIT_MAX_REQUESTS:
+        _watchlist_rate_limit_log[ip] = timestamps
+        return True
+    timestamps.append(now)
+    _watchlist_rate_limit_log[ip] = timestamps
+    return False
+
+
+class WatchlistItem(BaseModel):
+    display_name: str
+    symbol: str
+
+
+class WatchlistResponse(BaseModel):
+    items: List[WatchlistItem]
+
+
+class WatchlistAddRequest(BaseModel):
+    ticker: str  # 期權：yfinance美股代號；美股ORB：BingX目錄的display_name（例如"AAPL"）
+
+
+class BingxStockCatalogItem(BaseModel):
+    display_name: str
+    symbol: str
+
+
+class BingxStockCatalogResponse(BaseModel):
+    items: List[BingxStockCatalogItem]
+    total: int
+
+
+def _parse_bingx_stock_display_name(symbol: str) -> Optional[str]:
+    """從 'NCSKAAPL2USD/USDT:USDT' 或 'NCSINASDAQ1002USD/USDT:USDT' 解析出人類看得懂的代號，例如 'AAPL'。"""
+    base = symbol.split("/")[0]
+    for prefix in ("NCSK", "NCSI"):
+        if base.startswith(prefix) and base.endswith("2USD"):
+            return base[len(prefix):-len("2USD")]
+    return None
+
+
+def bingx_stock_catalog() -> Dict[str, str]:
+    """
+    從已於 lifespan 啟動時 load_markets() 過的 BingX 市場資料裡即時篩出代幣化
+    美股/指數商品，display_name -> bingx symbol。不額外打API，純記憶體篩選，
+    所以不需要另外開一個背景刷新迴圈——跟交易所本身的 exchange.markets 一樣新鮮。
+    """
+    exchange = exchange_pool_ref.get("bingx")
+    if exchange is None or not getattr(exchange, "markets", None):
+        return {}
+    catalog: Dict[str, str] = {}
+    for symbol, market in exchange.markets.items():
+        if not market.get("swap"):
+            continue
+        display_name = _parse_bingx_stock_display_name(symbol)
+        if display_name:
+            catalog[display_name] = symbol
+    return catalog
+
+
+# ---------------------------------------------------------------------------
 # 9. FastAPI 應用程式（lifespan 管理背景任務與交易所連線）
 # ---------------------------------------------------------------------------
 
@@ -4090,7 +4208,7 @@ async def lifespan(app: FastAPI):
     us_stock_task = asyncio.create_task(us_stock_orb_loop(exchange_pool))
     logger.info(
         "美股 ORB 當沖背景迴圈已啟動（標的：%s，只在美東 %s-%s 交易時段內運作）",
-        ", ".join(US_STOCK_SYMBOLS.keys()),
+        ", ".join(state.us_stock_watchlist.keys()),
         US_MARKET_OPEN.strftime("%H:%M"),
         US_MARKET_CLOSE.strftime("%H:%M"),
     )
@@ -4109,7 +4227,7 @@ async def lifespan(app: FastAPI):
     if OPTIONS_ANALYTICS_ENABLED:
         logger.info(
             "期權分析背景迴圈已啟動（標的：%s，每 %d 秒重算一次GEX剖面）",
-            ", ".join(OPTIONS_UNDERLYINGS.keys()),
+            ", ".join(state.options_watchlist.keys()),
             OPTIONS_SCAN_INTERVAL_SECONDS,
         )
 
@@ -4370,7 +4488,7 @@ async def get_options_gex() -> OptionsGexListResponse:
     """
     async with state.lock:
         underlyings = []
-        for display_name in OPTIONS_UNDERLYINGS:
+        for display_name in state.options_watchlist:
             opt_state = state.get_options_state(display_name)
             underlyings.append(OptionsGexResponse(
                 symbol=display_name,
@@ -4379,7 +4497,7 @@ async def get_options_gex() -> OptionsGexListResponse:
                 expiry=opt_state.expiry,
                 gamma_flip_strike=opt_state.gamma_flip_strike,
                 points=[OptionsGexPoint(**p) for p in opt_state.gex_points],
-                whale_sweep_supported=opt_state.whale_sweep_supported,
+                whale_sweep_supported=display_name in MOOMOO_WHALE_SWEEP_TICKERS,
                 updated_at=opt_state.last_updated,
             ))
         data_source_ok = state.options_data_source_ok
@@ -4388,6 +4506,59 @@ async def get_options_gex() -> OptionsGexListResponse:
         underlyings=underlyings, data_source_ok=data_source_ok, moomoo_online=moomoo_online,
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.get("/api/options/watchlist", response_model=WatchlistResponse)
+async def get_options_watchlist() -> WatchlistResponse:
+    """目前的期權分析自選清單（yfinance沒有「代號」跟「顯示名稱」的區分，兩者永遠相同）。"""
+    async with state.lock:
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
+    return WatchlistResponse(items=items)
+
+
+@app.post("/api/options/watchlist", response_model=WatchlistResponse)
+async def add_options_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistResponse:
+    """
+    新增一檔期權分析監控標的：理論上任何 yfinance 查得到期權鏈的美股代號都能加
+    （2026-07-11實測：yfinance單檔平均0.3秒，加到30檔清單上限也遠低於60秒
+    掃描週期，沒有效能疑慮），這裡用即時抓一次現貨價當驗證，抓不到代表代號
+    無效或yfinance目前沒有這檔資料。公開端點，IP限流+清單上限防濫用。
+    """
+    client_ip = _watchlist_client_ip(request)
+    if _watchlist_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
+
+    ticker = body.ticker.strip().upper()
+    if not ticker or not ticker.replace(".", "").replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="代號格式無效")
+
+    async with state.lock:
+        already_added = ticker in state.options_watchlist
+        if not already_added and len(state.options_watchlist) >= OPTIONS_WATCHLIST_MAX_SIZE:
+            raise HTTPException(status_code=400, detail=f"自選清單已達上限（{OPTIONS_WATCHLIST_MAX_SIZE}檔），請先移除幾檔再新增")
+
+    if not already_added:
+        # 驗證呼叫故意放在鎖外面：yfinance是同步阻塞API，就算包了to_thread也可能
+        # 花到接近1秒，鎖在裡面會卡住其他所有需要state.lock的背景迴圈/端點。
+        spot = await yfinance_client.get_spot_price(ticker)
+        if spot is None:
+            raise HTTPException(status_code=400, detail=f"查不到「{ticker}」的資料，請確認代號是否正確")
+
+    async with state.lock:
+        state.options_watchlist[ticker] = ticker
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
+    save_state_snapshot()
+    return WatchlistResponse(items=items)
+
+
+@app.delete("/api/options/watchlist/{display_name}", response_model=WatchlistResponse)
+async def remove_options_watchlist(display_name: str) -> WatchlistResponse:
+    """移除一檔期權分析監控標的（不清對應的 GEX 歷史狀態，只是不再繼續刷新/顯示，重新加回來會馬上恢復）。"""
+    async with state.lock:
+        state.options_watchlist.pop(display_name.strip().upper(), None)
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
+    save_state_snapshot()
+    return WatchlistResponse(items=items)
 
 
 @app.get("/api/options/whale-sweep", response_model=WhaleSweepResponse)
@@ -4586,7 +4757,9 @@ async def get_candles(symbol: str, limit: int = 60, timeframe: str = TIMEFRAME) 
 def _to_us_stock_response(ticker_symbol: str) -> USStockResponse:
     """讀取單一美股標的目前狀態並組成 USStockResponse，呼叫端須持有 state.lock。"""
     st = state.us_stock_states.get(ticker_symbol)
-    display_name = US_STOCK_DISPLAY_BY_SYMBOL.get(ticker_symbol, ticker_symbol)
+    display_name = next(
+        (name for name, sym in state.us_stock_watchlist.items() if sym == ticker_symbol), ticker_symbol
+    )
     signal = st.open_signal if st else None
     updated_at = (st.last_updated if st and st.last_updated else datetime.now(timezone.utc).isoformat())
 
@@ -4628,13 +4801,14 @@ def _to_us_stock_response(ticker_symbol: str) -> USStockResponse:
 @app.get("/api/us-stock-orb", response_model=USStockListResponse)
 async def get_us_stock_orb() -> USStockListResponse:
     """
-    美股 ORB 當沖（獨立模塊，實驗性策略，未經回測驗證）：固定回傳 US_STOCK_SYMBOLS
-    全部標的的狀態（不管有沒有訊號都回傳，監控用），跟主流幣的 universe=major 同樣道理。
+    美股 ORB 當沖（獨立模塊，實驗性策略，未經回測驗證）：回傳目前自選清單
+    （state.us_stock_watchlist，見 /api/us-stock/watchlist）全部標的的狀態
+    （不管有沒有訊號都回傳，監控用），跟主流幣的 universe=major 同樣道理。
     """
     async with state.lock:
         now_et = datetime.now(ZoneInfo(US_MARKET_TZ))
         market_session: Literal["OPEN", "CLOSED"] = "OPEN" if _is_us_market_active(now_et) else "CLOSED"
-        stocks = [_to_us_stock_response(sym) for sym in US_STOCK_SYMBOLS.values()]
+        stocks = [_to_us_stock_response(sym) for sym in state.us_stock_watchlist.values()]
         regime = state.us_market_regime
 
     return USStockListResponse(
@@ -4687,6 +4861,69 @@ async def get_us_stock_history() -> USStockHistoryResponse:
             win_rate_pct=round(win_rate, 2),
         ),
     )
+
+
+@app.get("/api/us-stock/catalog", response_model=BingxStockCatalogResponse)
+async def search_us_stock_catalog(q: str = "") -> BingxStockCatalogResponse:
+    """
+    搜尋 BingX 目前實際上架的代幣化美股/指數商品（NCSK個股/NCSI指數開頭，
+    2026-07-11實測共252檔），供美股ORB自選清單的新增介面用。q 為空時回傳前
+    50 檔（依代號字母排序），避免一次吐回全部檔位洗爆前端；total 回傳完整
+    符合數量，前端可以提示「還有更多，請輸入關鍵字縮小範圍」。
+    """
+    catalog = bingx_stock_catalog()
+    query = q.strip().upper()
+    matches = sorted(name for name in catalog if not query or query in name)
+    items = [BingxStockCatalogItem(display_name=name, symbol=catalog[name]) for name in matches[:50]]
+    return BingxStockCatalogResponse(items=items, total=len(matches))
+
+
+@app.get("/api/us-stock/watchlist", response_model=WatchlistResponse)
+async def get_us_stock_watchlist() -> WatchlistResponse:
+    """目前的美股ORB自選清單。"""
+    async with state.lock:
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
+    return WatchlistResponse(items=items)
+
+
+@app.post("/api/us-stock/watchlist", response_model=WatchlistResponse)
+async def add_us_stock_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistResponse:
+    """
+    新增一檔美股ORB監控標的：只能從 BingX 目前實際上架的代幣化美股/指數目錄
+    （/api/us-stock/catalog）裡選，不像期權分析可以開放到任意代號——ORB策略
+    需要這個交易所本身真的有這檔永續合約才能報價，不是隨便一個美股代號就能加。
+    """
+    client_ip = _watchlist_client_ip(request)
+    if _watchlist_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
+
+    display_name = body.ticker.strip().upper()
+    catalog = bingx_stock_catalog()
+    if display_name not in catalog:
+        raise HTTPException(status_code=400, detail=f"「{display_name}」不在 BingX 目前上架的代幣化美股/指數清單內")
+
+    async with state.lock:
+        already_added = display_name in state.us_stock_watchlist
+        if not already_added and len(state.us_stock_watchlist) >= US_STOCK_WATCHLIST_MAX_SIZE:
+            raise HTTPException(status_code=400, detail=f"自選清單已達上限（{US_STOCK_WATCHLIST_MAX_SIZE}檔），請先移除幾檔再新增")
+        state.us_stock_watchlist[display_name] = catalog[display_name]
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
+    save_state_snapshot()
+    return WatchlistResponse(items=items)
+
+
+@app.delete("/api/us-stock/watchlist/{display_name}", response_model=WatchlistResponse)
+async def remove_us_stock_watchlist(display_name: str) -> WatchlistResponse:
+    """
+    移除一檔美股ORB監控標的。若該標的目前正好有實盤部位持有中，不會被強制平倉
+    ——部位會繼續留在 state.us_stock_states 裡正常監控到TP/SL觸發或收盤平倉
+    （見 flatten_all_us_stock_positions），只是不再出現在自選清單/掃描名單。
+    """
+    async with state.lock:
+        state.us_stock_watchlist.pop(display_name.strip().upper(), None)
+        items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
+    save_state_snapshot()
+    return WatchlistResponse(items=items)
 
 
 def _to_meme_trade_response(ticker_symbol: str) -> MemeTradeResponse:

@@ -54,6 +54,8 @@ import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
 import { BacktestSandboxPanel } from "@/components/backtest-sandbox-panel"
 import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
+import { WatchlistEditor } from "@/components/watchlist-editor"
+import { FavoritesOverview } from "@/components/favorites-overview"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -64,21 +66,22 @@ const fetcher = (url: string) =>
 
 // 迷因雷達、迷因當沖、美股ORB、AI輿情雷達、期權分析都是獨立模塊（跟主流幣
 // 不同的資料形狀），tab key 因此延伸出 /api/signals 的 Universe 之外。
-type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics" | "backtest"
+type TabKey = Universe | "meme" | "memeTrade" | "usStock" | "newsAgent" | "optionsAnalytics" | "backtest" | "overview"
 
 const TABS: { key: TabKey; label: string }[] = [
+  { key: "overview", label: "⭐ 我的關注" },
   { key: "major", label: "主流幣" },
   { key: "scan", label: "市場掃描" },
   { key: "meme", label: "迷因雷達" },
   { key: "memeTrade", label: "🔥 迷因當沖" },
   { key: "usStock", label: "美股 ORB" },
-  { key: "newsAgent", label: "AI 智能輿情雷達" },
   { key: "optionsAnalytics", label: "📊 期權分析" },
+  { key: "newsAgent", label: "新聞" },
   { key: "backtest", label: "🚀 回測沙盒" },
 ]
 
 export function TradeDashboard() {
-  const [mode, setMode] = useState<TabKey>("major")
+  const [mode, setMode] = useState<TabKey>("overview")
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [newsCategory, setNewsCategory] = useState<NewsCategory | "all">("all")
   const [liquidationSymbol, setLiquidationSymbol] = useState<string>("BTC")
@@ -89,13 +92,14 @@ export function TradeDashboard() {
   const isNewsAgentMode = mode === "newsAgent"
   const isOptionsMode = mode === "optionsAnalytics"
   const isBacktestMode = mode === "backtest"
+  const isOverviewMode = mode === "overview"
 
   const {
     data: rawSignals,
     error: signalsError,
     isLoading: signalsLoading,
   } = useSWR<BackendSignalListResponse>(
-    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode || isBacktestMode
+    isMemeMode || isMemeTradeMode || isUSStockMode || isNewsAgentMode || isOptionsMode || isBacktestMode || isOverviewMode
       ? null
       : `/api/signals?universe=${mode}`,
     fetcher,
@@ -122,7 +126,7 @@ export function TradeDashboard() {
     data: rawOptionsGex,
     error: optionsGexError,
     isLoading: optionsGexLoading,
-  } = useSWR<BackendOptionsGexListResponse>(isOptionsMode ? "/api/options/gex" : null, fetcher, {
+  } = useSWR<BackendOptionsGexListResponse>(isOptionsMode || isOverviewMode ? "/api/options/gex" : null, fetcher, {
     refreshInterval: 30000,
   })
 
@@ -145,8 +149,8 @@ export function TradeDashboard() {
     data: rawUSStocks,
     error: usStocksError,
     isLoading: usStocksLoading,
-  } = useSWR<BackendUSStockListResponse>(isUSStockMode ? "/api/us-stock-orb" : null, fetcher, {
-    refreshInterval: 3000,
+  } = useSWR<BackendUSStockListResponse>(isUSStockMode || isOverviewMode ? "/api/us-stock-orb" : null, fetcher, {
+    refreshInterval: isOverviewMode ? 15000 : 3000,
   })
 
   const {
@@ -273,43 +277,49 @@ export function TradeDashboard() {
 
   const activeError = isBacktestMode
     ? undefined
-    : isMemeMode
-      ? memesError
-      : isMemeTradeMode
-        ? memeTradeError
-        : isUSStockMode
-          ? usStocksError
-          : isNewsAgentMode
-            ? newsError
-            : isOptionsMode
-              ? optionsGexError
-              : signalsError
+    : isOverviewMode
+      ? (optionsGexError && usStocksError ? optionsGexError : undefined)
+      : isMemeMode
+        ? memesError
+        : isMemeTradeMode
+          ? memeTradeError
+          : isUSStockMode
+            ? usStocksError
+            : isNewsAgentMode
+              ? newsError
+              : isOptionsMode
+                ? optionsGexError
+                : signalsError
   const activeLoading = isBacktestMode
     ? false
-    : isMemeMode
-      ? memesLoading
-      : isMemeTradeMode
-        ? memeTradeLoading
-        : isUSStockMode
-          ? usStocksLoading
-          : isNewsAgentMode
-            ? newsLoading
-            : isOptionsMode
-              ? optionsGexLoading
-              : signalsLoading
+    : isOverviewMode
+      ? optionsGexLoading || usStocksLoading
+      : isMemeMode
+        ? memesLoading
+        : isMemeTradeMode
+          ? memeTradeLoading
+          : isUSStockMode
+            ? usStocksLoading
+            : isNewsAgentMode
+              ? newsLoading
+              : isOptionsMode
+                ? optionsGexLoading
+                : signalsLoading
   const isConnected = isBacktestMode
     ? true
-    : isMemeMode
-      ? !memesError && !!rawMemes
-      : isMemeTradeMode
-        ? !memeTradeError && !!rawMemeTrade
-        : isUSStockMode
-          ? !usStocksError && !!rawUSStocks
-          : isNewsAgentMode
-            ? !newsError && !!rawNews
-            : isOptionsMode
-              ? !optionsGexError && !!rawOptionsGex
-              : !signalsError && !!rawSignals
+    : isOverviewMode
+      ? (!optionsGexError && !!rawOptionsGex) || (!usStocksError && !!rawUSStocks)
+      : isMemeMode
+        ? !memesError && !!rawMemes
+        : isMemeTradeMode
+          ? !memeTradeError && !!rawMemeTrade
+          : isUSStockMode
+            ? !usStocksError && !!rawUSStocks
+            : isNewsAgentMode
+              ? !newsError && !!rawNews
+              : isOptionsMode
+                ? !optionsGexError && !!rawOptionsGex
+                : !signalsError && !!rawSignals
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -357,7 +367,22 @@ export function TradeDashboard() {
         </div>
       )}
 
-      {isMemeMode ? (
+      {isOverviewMode ? (
+        <FavoritesOverview
+          optionsUnderlyings={optionsGexData.underlyings}
+          optionsLoading={optionsGexLoading}
+          usStocks={usStockData.stocks}
+          usStocksLoading={usStocksLoading}
+          onSelectOptions={(symbol) => {
+            setSelectedSymbol(symbol)
+            setMode("optionsAnalytics")
+          }}
+          onSelectUSStock={(symbol) => {
+            setSelectedSymbol(symbol)
+            setMode("usStock")
+          }}
+        />
+      ) : isMemeMode ? (
         <>
           <MemeRadar alerts={memeAlerts} watchlist={memeWatchlist} isLoading={memesLoading} error={undefined} />
           <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
@@ -451,6 +476,14 @@ export function TradeDashboard() {
 
           <USStockWatchlist stocks={usStockData.stocks} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
 
+          <WatchlistEditor
+            watchlistUrl="/api/us-stock/watchlist"
+            dataUrl="/api/us-stock-orb"
+            catalogUrl="/api/us-stock/catalog"
+            placeholder="搜尋 BingX 代幣化美股/指數，例如 AAPL"
+            maxSize={30}
+          />
+
           {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal ? (
             <HeroSignal signal={selectedUSStock.signal} />
           ) : selectedUSStock ? (
@@ -502,7 +535,7 @@ export function TradeDashboard() {
           <p className="text-center text-xs text-muted-foreground">
             美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，
             <strong className="text-foreground">尚未經過回測驗證，勝率未知</strong>
-            ，標的為 BingX 代幣化美股商品（TSLA/NVDA/MSTR/SOXL/TQQQ），僅在美東交易時段運作。
+            ，標的為 BingX 代幣化美股商品，可在上方自選清單自由增刪（目前上架約252檔可選），僅在美東交易時段運作。
           </p>
         </>
       ) : isNewsAgentMode ? (
@@ -525,7 +558,7 @@ export function TradeDashboard() {
           </div>
           <NewsRadar items={filteredNewsItems} isLoading={newsLoading} error={undefined} />
           <p className="text-center text-xs text-muted-foreground">
-            AI 智能輿情雷達為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
+            新聞（AI 智能輿情雷達）為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
             等公開新聞來源，交給 AI 判斷相關標的與情緒分數（-10~+10），純粹是資訊監控，
             <strong className="text-foreground">不是交易訊號</strong>，沒有方向、槓桿或 TP/SL。分類依 AI
             判斷出的標的自動歸類加密貨幣／美股，沒有明確標的時預設歸美股。
@@ -540,11 +573,12 @@ export function TradeDashboard() {
             moomooOnline={optionsGexData.moomooOnline}
             isLoading={optionsGexLoading}
             whaleSweepLoading={whaleSweepLoading}
+            initialSymbol={selectedSymbol}
           />
           <p className="text-center text-xs text-muted-foreground">
             期權分析為獨立功能：串接 yfinance 期權鏈，自行用 Black-Scholes 模型計算 Gamma
             曝險（GEX）分佈與擠壓臨界點，<strong className="text-foreground">純粹是造市商部位結構的參考資訊，不是交易訊號</strong>
-            ，沒有方向、槓桿或 TP/SL。首批監控標的：NVDA / TSLA / SPY / SMCI / SPCX，僅在美股交易時段更新。期權大單即時流
+            ，沒有方向、槓桿或 TP/SL。可在上方自選清單自由輸入任意美股代號增刪監控標的，僅在美股交易時段更新。期權大單即時流
             資料源自使用者本機執行的 Moomoo Whale Sweep 監聽工具（選擇性回傳），Live/Standby
             燈號代表本機監聽目前是否在線，離線時 GEX 主面板不受影響、只是大單清單不會有新資料。
           </p>

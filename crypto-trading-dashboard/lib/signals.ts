@@ -1072,3 +1072,51 @@ export function formatCompactUsd(value: number): string {
   if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`
   return `${sign}$${abs.toFixed(0)}`
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 自選監控清單（動態Watchlist）：期權分析 + 美股ORB 共用同一組型別/回應格式
+// （後端 WatchlistResponse），美股ORB額外多一個 BingX 目錄搜尋回應。
+// ---------------------------------------------------------------------------
+
+export interface BackendWatchlistItem {
+  display_name: string
+  symbol: string
+}
+
+export interface BackendWatchlistResponse {
+  items: BackendWatchlistItem[]
+}
+
+export interface WatchlistItem {
+  displayName: string
+  symbol: string
+}
+
+export function adaptWatchlist(raw: BackendWatchlistResponse): WatchlistItem[] {
+  return raw.items.map((item) => ({ displayName: item.display_name, symbol: item.symbol }))
+}
+
+export interface BackendBingxStockCatalogItem {
+  display_name: string
+  symbol: string
+}
+
+export interface BackendBingxStockCatalogResponse {
+  items: BackendBingxStockCatalogItem[]
+  total: number
+}
+
+export interface BingxStockCatalogItem {
+  displayName: string
+  symbol: string
+}
+
+export function adaptBingxStockCatalog(raw: BackendBingxStockCatalogResponse): {
+  items: BingxStockCatalogItem[]
+  total: number
+} {
+  return {
+    items: raw.items.map((item) => ({ displayName: item.display_name, symbol: item.symbol })),
+    total: raw.total,
+  }
+}
