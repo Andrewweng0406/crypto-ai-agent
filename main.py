@@ -227,25 +227,47 @@ ATTENTION_OVERHEAT_STREAK_THRESHOLD = 4  # 連續4次（=1小時）都在前3名
 #   1. 沒有爆倉數據——BingX 透過 ccxt 不支援爆倉相關端點（fetchLiquidations /
 #      watchLiquidations 皆為 False/None），所以判斷完全不用爆倉量，只用「持倉量
 #      (OI) 成長率 + 現貨RVOL + 資金費率」這三個真的拿得到的數據。
-#   2. OI 沒有歷史 API——BingX 的 fetchOpenInterestHistory 直接回「不支援」，只有
-#      fetchOpenInterest（當下快照）能用。「OI成長率」是系統自己每 5 分鐘輪詢一次
-#      、累積出時間序列才算得出來的，不是交易所直接提供。這代表剛部署的頭幾個
-#      小時，成長率會是 None（資料還在累積中），不是 bug。
+#   2. OI 成長率優先用 Binance+Bybit 全網加總（見 fetch_aggregated_oi 說明，兩家
+#      都有真實歷史OI端點，不用像BingX那樣自己輪詢累積）；任一/兩家連不上時
+#      （例如伺服器所在地區被交易所地理封鎖）自動退回 BingX ccxt 當下快照+ 自行
+#      輪詢累積歷史這條路，這種情況下剛部署的頭幾小時成長率會是 None（資料還在
+#      累積中），不是 bug。
 #   3. 不是每個候選幣都有永續合約——迷因幣候選池裡有些幣只有現貨、沒有合約市場
 #      （例如 PEPE、BONK），這些幣沒有 OI/資金費率可查，會標示「無合約市場」。
 #   4. 這整套邏輯（OI暴增 + RVOL + 資金費率極端值的組合）完全沒有回測驗證過，
 #      不是「高勝率保證」，前端不會用「黃金開倉點」這種話術。
+#   5. 2026-07-11 深夜：門檻改成使用者直接指定的新數字（1H OI成長5%、RVOL 1.5），
+#      比原本（30%、3.0）寬鬆非常多——green燈號會從「稀有極端事件」變成「一天可能
+#      觸發好幾次」，這是策略參數的實質改變，不是單純解鎖或修bug，特此記錄。
 SQUEEZE_OI_POLL_INTERVAL_SECONDS = 300  # 每5分鐘輪詢一次OI快照（同時也是整個模塊的掃描頻率）
 SQUEEZE_OI_HISTORY_LEN = 48             # 48筆 x 5分鐘 = 4小時歷史
 SQUEEZE_OI_LOOKBACK_15M_SAMPLES = 3     # 15分鐘 / 5分鐘一筆 = 回看3筆前
 SQUEEZE_OI_LOOKBACK_1H_SAMPLES = 12     # 1小時 / 5分鐘一筆 = 回看12筆前
-SQUEEZE_OI_GROWTH_BLUE_PCT = 15.0       # 藍燈（短線頭皮檔）：15分鐘OI成長門檻
-SQUEEZE_OI_GROWTH_GREEN_PCT = 30.0      # 綠燈/黃燈：1小時OI成長門檻
-SQUEEZE_RVOL_THRESHOLD = 3.0            # 綠燈現貨共振門檻
+SQUEEZE_OI_GROWTH_BLUE_PCT = 15.0       # 藍燈（短線頭皮檔）：15分鐘OI成長門檻（維持不變，使用者只指定了1H門檻）
+SQUEEZE_OI_GROWTH_GREEN_PCT = 5.0       # 綠燈/黃燈：1小時OI成長門檻（原30.0，使用者新指定5.0）
+SQUEEZE_RVOL_THRESHOLD = 1.5            # 綠燈現貨共振門檻（原3.0，使用者新指定1.5）
 SQUEEZE_TIMEFRAME = "15m"               # 算RVOL/價格突破用的K線週期
 SQUEEZE_VOLUME_LOOKBACK = 20            # RVOL基準週期（不含當根）
 SQUEEZE_BREAKOUT_LOOKBACK = 20          # 判斷「價格突破」用的回看K棒數（不含當根）
 SQUEEZE_FEED_MAX_LEN = 30               # 擠壓警報滾動牆保留筆數
+
+# --- 全網OI加總（Binance + Bybit 公開REST，白嫖不需要金鑰）---
+# 兩家都提供真實歷史OI端點（BingX完全沒有），可以直接算出「現在 vs 約1小時前」
+# 的真實全網持倉變化率，不用像原本BingX那樣自己輪詢累積。⚠️ 這裡用 aiohttp
+# 直連兩家REST，不是ccxt——2026-07-11測試時我自己的環境連Binance/Bybit都被
+# 地理封鎖（IP限制，非帳號問題），沒辦法在部署前實測 Railway 連不連得到；
+# 更新：實測時發現連 lifespan() 載入 ccxt binance 市場資料都直接被451拒絕
+# （「restricted location」），代表這個開發環境對 Binance 是全面封鎖，不只
+# raw REST——先前寫在這裡「ccxt打Binance已經證實是通的」是我沒有實際驗證
+# 就下的推論，是錯的，特此更正。Railway正式環境連不連得到目前仍是未知數，
+# 純粹交給下面的 circuit breaker + fallback 機制去正確處理任何結果。
+BINANCE_OI_HIST_URL = "https://fapi.binance.com/futures/data/openInterestHist"
+BYBIT_OI_URL = "https://api.bybit.com/v5/market/open-interest"
+AGGREGATED_OI_HTTP_TIMEOUT_SECONDS = 5  # 原本設8秒，实测發現地理封鎖時每個標的都要等滿逾時，拖慢整輪掃描，縮短為5秒
+AGGREGATED_OI_LOOKBACK_SAMPLES = 13     # 5分鐘一筆，13筆涵蓋現在往前約1小時
+AGGREGATED_OI_CIRCUIT_BREAKER_THRESHOLD = 2  # 同一輪掃描內連續失敗達這個次數，直接判定「這輪連不上」，
+                                              # 剩餘標的全部跳過aggregated fetch直接退回BingX，不再逐一等5秒逾時
+                                              # ——不然50檔標的×5秒=超過4分鐘，會把整個Squeeze掃描拖到卡住
 
 # --- 美股當沖 ORB（Opening Range Breakout，獨立模塊，實驗性策略）---
 # ⚠️ 這是使用者直接指定的策略邏輯（開盤區間突破 + RVOL 過濾 + 大盤濾網），
@@ -849,7 +871,7 @@ class AssistantBroadcastItem(BaseModel):
     id: str
     message: str
     symbol: str
-    kind: Literal["meme_trade", "whale_sweep"]
+    kind: Literal["meme_trade", "whale_sweep", "squeeze_mode"]
     triggered_at: str
 
 
@@ -1302,6 +1324,91 @@ async def fetch_tickers_batch(exchange_pool: dict, symbols: List[str]) -> Dict[s
 # ---------------------------------------------------------------------------
 # 6. 聰明錢模塊（合約：資金費率 / 未平倉量 / 大戶多空比）
 # ---------------------------------------------------------------------------
+
+async def _fetch_binance_oi_history(session: aiohttp.ClientSession, symbol: str) -> Optional[dict]:
+    """
+    真實歷史OI（幣本位數量，不是USD價值——見 fetch_aggregated_oi 說明為什麼刻意
+    不用 sumOpenInterestValue）。回傳 {"oi_now","oi_1h_ago"} 或 None（任何失敗，
+    包含地理封鎖），呼叫端會優雅處理，不會讓整個Squeeze掃描掛掉。
+    """
+    try:
+        async with session.get(
+            BINANCE_OI_HIST_URL,
+            params={"symbol": symbol, "period": "5m", "limit": AGGREGATED_OI_LOOKBACK_SAMPLES},
+            timeout=aiohttp.ClientTimeout(total=AGGREGATED_OI_HTTP_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            if not isinstance(data, list) or len(data) < 2:
+                return None
+            # 不假設API回傳順序，明確依時間戳排序，避免順序假設錯誤導致成長率算反
+            sorted_points = sorted(data, key=lambda p: int(p["timestamp"]))
+            return {
+                "oi_now": float(sorted_points[-1]["sumOpenInterest"]),
+                "oi_1h_ago": float(sorted_points[0]["sumOpenInterest"]),
+            }
+    except Exception as exc:  # noqa: BLE001 - 地理封鎖/網路問題都算在內，統一優雅降級
+        logger.warning("Binance 全網OI抓取失敗（%s）：%s", symbol, exc)
+        return None
+
+
+async def _fetch_bybit_oi_history(session: aiohttp.ClientSession, symbol: str) -> Optional[dict]:
+    """跟 _fetch_binance_oi_history 同樣邏輯，Bybit v5 open-interest 端點同樣回傳幣本位數量。"""
+    try:
+        async with session.get(
+            BYBIT_OI_URL,
+            params={
+                "category": "linear", "symbol": symbol,
+                "intervalTime": "5min", "limit": str(AGGREGATED_OI_LOOKBACK_SAMPLES),
+            },
+            timeout=aiohttp.ClientTimeout(total=AGGREGATED_OI_HTTP_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            payload = await resp.json()
+            points = ((payload.get("result") or {}).get("list")) or []
+            if len(points) < 2:
+                return None
+            sorted_points = sorted(points, key=lambda p: int(p["timestamp"]))
+            return {
+                "oi_now": float(sorted_points[-1]["openInterest"]),
+                "oi_1h_ago": float(sorted_points[0]["openInterest"]),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Bybit 全網OI抓取失敗（%s）：%s", symbol, exc)
+        return None
+
+
+async def fetch_aggregated_oi(session: aiohttp.ClientSession, base_symbol: str) -> Optional[dict]:
+    """
+    直連 Binance + Bybit 公開REST（不需要金鑰）加總全網OI，算出1小時持倉變化率。
+    比單一交易所（BingX）更能反映廣泛市場的持倉狀況——BingX規模遠小於這兩家
+    合計，而且這兩家都有真實歷史OI端點，不用像BingX那樣自己輪詢累積才有數據。
+
+    兩家OI都是「幣本位數量」（例如多少顆BTC），不是USD價值，同單位才能直接相加，
+    不需要另外查現價做USD轉換（Binance有 sumOpenInterestValue 這個USD版本，
+    但Bybit沒有對應欄位，混用會拿USD價值加幣本位數量，是錯的，故意不用那個）。
+
+    任一交易所失敗，用另一家單獨的數字；兩家都失敗回傳 None，呼叫端會退回
+    scan_squeeze_mode 原本的 BingX ccxt 方式，不會讓 Squeeze Mode 斷炊。
+    """
+    symbol = f"{base_symbol}USDT"
+    binance_result, bybit_result = await asyncio.gather(
+        _fetch_binance_oi_history(session, symbol),
+        _fetch_bybit_oi_history(session, symbol),
+    )
+
+    if binance_result is None and bybit_result is None:
+        return None
+
+    oi_now = (binance_result["oi_now"] if binance_result else 0.0) + (bybit_result["oi_now"] if bybit_result else 0.0)
+    oi_1h_ago = (binance_result["oi_1h_ago"] if binance_result else 0.0) + (bybit_result["oi_1h_ago"] if bybit_result else 0.0)
+    oi_1h_growth_pct = ((oi_now - oi_1h_ago) / oi_1h_ago * 100) if oi_1h_ago > 0 else None
+
+    sources = [name for name, r in (("binance", binance_result), ("bybit", bybit_result)) if r is not None]
+    return {"oi_now": oi_now, "oi_1h_growth_pct": oi_1h_growth_pct, "sources": sources}
+
 
 async def fetch_top_trader_ratio(exchange, exchange_name: str, market_id: str) -> Optional[float]:
     """
@@ -2180,7 +2287,7 @@ def build_meme_trade_open_signal(display_name: str, ticker_symbol: str, side: st
     }
 
 
-async def push_assistant_broadcast(message: str, symbol: str, kind: Literal["meme_trade", "whale_sweep"]) -> None:
+async def push_assistant_broadcast(message: str, symbol: str, kind: Literal["meme_trade", "whale_sweep", "squeeze_mode"]) -> None:
     """
     AI副官0-token戰況跑馬燈：純字串模板組合（呼叫端已經把數字準備好，這裡只是
     appendleft），完全不呼叫LLM，不消耗任何API額度。跟 news_agent 的LLM情緒
@@ -2764,79 +2871,113 @@ async def scan_squeeze_mode(exchange_pool: dict) -> None:
     exchange = exchange_pool[state.active_exchange_name]
     new_green_alerts: List[dict] = []
 
-    for symbol in candidate_symbols:
-        async with state.lock:
-            sq_state = state.get_squeeze_state(symbol)
-            perp_symbol = sq_state.perp_symbol
-            already_resolved = perp_symbol is not None or not sq_state.has_perp_market
+    # Circuit breaker：本輪掃描如果一開始連續失敗（含地理封鎖），代表這輪
+    # Binance/Bybit根本連不上，後面標的直接跳過aggregated fetch退回BingX，
+    # 不要每個標的都白白等滿逾時——50檔標的×5秒逾時會拖到超過4分鐘，見常數說明。
+    aggregated_oi_consecutive_failures = 0
+    aggregated_oi_unavailable_this_cycle = False
 
-        if not already_resolved:
-            perp_symbol = _resolve_perp_symbol(symbol, exchange)
+    async with aiohttp.ClientSession() as agg_session:
+        for symbol in candidate_symbols:
             async with state.lock:
                 sq_state = state.get_squeeze_state(symbol)
-                sq_state.perp_symbol = perp_symbol
-                sq_state.has_perp_market = perp_symbol is not None
+                perp_symbol = sq_state.perp_symbol
+                already_resolved = perp_symbol is not None or not sq_state.has_perp_market
 
-        if not perp_symbol:
-            continue  # 沒有合約市場（例如純現貨迷因幣），前端顯示「無合約市場」，這裡直接跳過
+            if not already_resolved:
+                perp_symbol = _resolve_perp_symbol(symbol, exchange)
+                async with state.lock:
+                    sq_state = state.get_squeeze_state(symbol)
+                    sq_state.perp_symbol = perp_symbol
+                    sq_state.has_perp_market = perp_symbol is not None
 
-        oi_value: Optional[float] = None
-        funding_rate: Optional[float] = None
-        pv: Optional[dict] = None
+            if not perp_symbol:
+                continue  # 沒有合約市場（例如純現貨迷因幣），前端顯示「無合約市場」，這裡直接跳過
 
-        try:
-            oi = await exchange.fetch_open_interest(perp_symbol)
-            oi_value = oi.get("openInterestValue") or oi.get("openInterestAmount")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Squeeze模式抓取OI失敗（%s）：%s", perp_symbol, exc)
+            oi_value: Optional[float] = None
+            aggregated_oi_growth_1h: Optional[float] = None
+            funding_rate: Optional[float] = None
+            pv: Optional[dict] = None
 
-        try:
-            funding = await exchange.fetch_funding_rate(perp_symbol)
-            funding_rate = funding.get("fundingRate")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Squeeze模式抓取資金費率失敗（%s）：%s", perp_symbol, exc)
+            # 優先用 Binance+Bybit 全網加總（真實歷史OI，見 fetch_aggregated_oi 說明），
+            # 失敗（含地理封鎖）就退回原本 BingX ccxt 當下快照 + 自行輪詢累積這條路。
+            aggregated = None
+            if not aggregated_oi_unavailable_this_cycle:
+                base_symbol = symbol.split("/")[0]
+                aggregated = await fetch_aggregated_oi(agg_session, base_symbol)
+                if aggregated is None:
+                    aggregated_oi_consecutive_failures += 1
+                    if aggregated_oi_consecutive_failures >= AGGREGATED_OI_CIRCUIT_BREAKER_THRESHOLD:
+                        aggregated_oi_unavailable_this_cycle = True
+                        logger.warning(
+                            "全網OI(Binance+Bybit)連續失敗%d次，本輪掃描剩餘標的直接退回BingX，不再逐一等待逾時",
+                            aggregated_oi_consecutive_failures,
+                        )
+                else:
+                    aggregated_oi_consecutive_failures = 0
 
-        try:
-            df = await fetch_ohlcv_for_symbol(
-                exchange_pool, perp_symbol, timeframe=SQUEEZE_TIMEFRAME,
-                limit=max(SQUEEZE_VOLUME_LOOKBACK, SQUEEZE_BREAKOUT_LOOKBACK) + 10,
-            )
-            pv = compute_squeeze_price_volume(df)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Squeeze模式抓取K線失敗（%s）：%s", perp_symbol, exc)
-
-        async with state.lock:
-            sq_state = state.get_squeeze_state(symbol)
-            if oi_value is not None:
-                sq_state.oi_history.append(float(oi_value))
-            sq_state.funding_rate = funding_rate
-            if pv is not None:
-                sq_state.rvol = pv["rvol"]
-                sq_state.is_breakout = pv["is_breakout"]
-
-            oi_growth_15m = compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_15M_SAMPLES)
-            oi_growth_1h = compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_1H_SAMPLES)
-            sq_state.oi_growth_15m_pct = oi_growth_15m
-            sq_state.oi_growth_1h_pct = oi_growth_1h
-
-            tier = compute_squeeze_tier(oi_growth_15m, oi_growth_1h, sq_state.rvol, funding_rate, sq_state.is_breakout)
-            sq_state.tier = tier
-            sq_state.last_updated = datetime.now(timezone.utc).isoformat()
-
-            if tier == "green":
-                if not sq_state.tier_active:
-                    sq_state.tier_active = True
-                    feed_record = {
-                        "symbol": symbol,
-                        "oi_growth_1h_pct": oi_growth_1h,
-                        "rvol": sq_state.rvol,
-                        "funding_rate": funding_rate,
-                        "triggered_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    state.squeeze_feed.appendleft(feed_record)
-                    new_green_alerts.append(feed_record)
+            if aggregated is not None:
+                oi_value = aggregated["oi_now"]
+                aggregated_oi_growth_1h = aggregated["oi_1h_growth_pct"]
             else:
-                sq_state.tier_active = False
+                try:
+                    oi = await exchange.fetch_open_interest(perp_symbol)
+                    oi_value = oi.get("openInterestValue") or oi.get("openInterestAmount")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Squeeze模式抓取OI失敗（%s）：%s", perp_symbol, exc)
+
+            try:
+                funding = await exchange.fetch_funding_rate(perp_symbol)
+                funding_rate = funding.get("fundingRate")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Squeeze模式抓取資金費率失敗（%s）：%s", perp_symbol, exc)
+
+            try:
+                df = await fetch_ohlcv_for_symbol(
+                    exchange_pool, perp_symbol, timeframe=SQUEEZE_TIMEFRAME,
+                    limit=max(SQUEEZE_VOLUME_LOOKBACK, SQUEEZE_BREAKOUT_LOOKBACK) + 10,
+                )
+                pv = compute_squeeze_price_volume(df)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Squeeze模式抓取K線失敗（%s）：%s", perp_symbol, exc)
+
+            async with state.lock:
+                sq_state = state.get_squeeze_state(symbol)
+                if oi_value is not None:
+                    sq_state.oi_history.append(float(oi_value))
+                sq_state.funding_rate = funding_rate
+                if pv is not None:
+                    sq_state.rvol = pv["rvol"]
+                    sq_state.is_breakout = pv["is_breakout"]
+
+                oi_growth_15m = compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_15M_SAMPLES)
+                # 1小時成長率優先用全網加總的真實歷史比較（部署當下就準，不用等自行
+                # 累積滿1小時），加總失敗時才退回自行累積這條路。
+                oi_growth_1h = (
+                    aggregated_oi_growth_1h if aggregated_oi_growth_1h is not None
+                    else compute_oi_growth_pct(sq_state.oi_history, SQUEEZE_OI_LOOKBACK_1H_SAMPLES)
+                )
+                sq_state.oi_growth_15m_pct = oi_growth_15m
+                sq_state.oi_growth_1h_pct = oi_growth_1h
+
+                tier = compute_squeeze_tier(oi_growth_15m, oi_growth_1h, sq_state.rvol, funding_rate, sq_state.is_breakout)
+                sq_state.tier = tier
+                sq_state.last_updated = datetime.now(timezone.utc).isoformat()
+
+                if tier == "green":
+                    if not sq_state.tier_active:
+                        sq_state.tier_active = True
+                        feed_record = {
+                            "symbol": symbol,
+                            "oi_growth_1h_pct": oi_growth_1h,
+                            "rvol": sq_state.rvol,
+                            "funding_rate": funding_rate,
+                            "triggered_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        state.squeeze_feed.appendleft(feed_record)
+                        new_green_alerts.append(feed_record)
+                else:
+                    sq_state.tier_active = False
 
     state.last_squeeze_scan_at = now
 
@@ -2848,6 +2989,12 @@ async def scan_squeeze_mode(exchange_pool: dict) -> None:
             f"RVOL：{(alert['rvol'] or 0):.2f}x ／ "
             f"資金費率：{(alert['funding_rate'] or 0) * 100:.3f}%\n\n"
             f"⚠️ 此訊號組合未經回測驗證，請自行判斷風險"
+        )
+        display_symbol = alert["symbol"].split("/")[0]
+        await push_assistant_broadcast(
+            f"🔥 警告：{display_symbol} 持倉量 1H 暴增 {(alert['oi_growth_1h_pct'] or 0):+.1f}%，"
+            f"且 RVOL 達 {(alert['rvol'] or 0):.2f}，已進入極端 Squeeze 軋空/殺多模式！",
+            display_symbol, "squeeze_mode",
         )
 
 
