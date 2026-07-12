@@ -1112,6 +1112,29 @@ class AppState:
             self.meme_trade_states[symbol] = MemeTradeState()
         return self.meme_trade_states[symbol]
 
+    def open_signal_owner(self, symbol: str, exclude_module: str) -> Optional[str]:
+        """跨模塊曝險防護（顧問備忘錄2026-07-12風控缺口#1）：市場掃描/Donchian
+        （self.symbols）跟迷因當沖（self.meme_trade_states）用的是同一套交易所
+        symbol字串格式（例如 "WIF/USDT:USDT"），而 refresh_scan_universe() 只把
+        MAJOR_SYMBOLS 排除在候選名單外、沒有排除 MEME_TRADE_SYMBOLS，所以同一個
+        標的實際上可能同時被兩邊各自獨立判斷開倉，彼此都不知道對方已經持有訊號。
+        美股ORB／RSI2用的是完全不同的symbol命名空間（BingX代碼、純股票代號），
+        目前不會跟前兩者或彼此撞名，但仍一併檢查以避免未來命名空間變動時又出現
+        同樣的缺口。呼叫端須持有 self.lock。回傳已持有訊號的模塊名稱，沒有則回傳
+        None。"""
+        candidates = (
+            ("市場掃描", self.symbols.get(symbol)),
+            ("迷因當沖", self.meme_trade_states.get(symbol)),
+            ("美股ORB", self.us_stock_states.get(symbol)),
+            ("RSI2均值回歸", self.rsi2_states.get(symbol)),
+        )
+        for module_name, sym_state in candidates:
+            if module_name == exclude_module:
+                continue
+            if sym_state is not None and getattr(sym_state, "open_signal", None) is not None:
+                return module_name
+        return None
+
     @property
     def moomoo_online(self) -> bool:
         if self.moomoo_last_seen_monotonic is None:
@@ -2085,10 +2108,16 @@ async def scan_us_stock_orb(exchange_pool: dict, display_name: str, ticker_symbo
         s.day_change_pct = day_change_pct
         s.last_updated = datetime.now(timezone.utc).isoformat()
 
+        blocking_module = state.open_signal_owner(ticker_symbol, exclude_module="美股ORB")
         if s.open_signal is not None or candidate is None:
             pass  # 已有部位，或這輪沒有候選訊號
         elif s.triggered_date == today_et.isoformat():
             pass  # 今天已經觸發過一次，避免在區間邊緣反覆進出
+        elif blocking_module is not None:
+            logger.info(
+                "跨模塊曝險防護：%s 已被「%s」模塊持有中，美股ORB本輪不開新倉",
+                ticker_symbol, blocking_module,
+            )
         else:
             s.open_signal = build_us_stock_open_signal(display_name, ticker_symbol, candidate)
             s.triggered_date = today_et.isoformat()
@@ -2424,7 +2453,13 @@ async def scan_meme_trade_symbol(exchange_pool: dict, display_name: str, ticker_
     opened_signal: Optional[dict] = None
     async with state.lock:
         st = state.get_meme_trade_state(ticker_symbol)
-        if st.open_signal is None:
+        blocking_module = state.open_signal_owner(ticker_symbol, exclude_module="迷因當沖")
+        if st.open_signal is None and blocking_module is not None:
+            logger.info(
+                "跨模塊曝險防護：%s 已被「%s」模塊持有中，迷因當沖本輪不開新倉",
+                ticker_symbol, blocking_module,
+            )
+        elif st.open_signal is None:
             st.open_signal = build_meme_trade_open_signal(display_name, ticker_symbol, side, entry_price, atr)
             opened_signal = st.open_signal
 
@@ -3273,7 +3308,13 @@ async def scan_rsi2_stock(display_name: str) -> None:
 
         # 只在收盤已確認、昨天訊號成立、且目前沒有部位時才考慮開新倉——進場價用
         # 「今天的開盤價」（yfinance當天K棒的open欄位一開盤就固定，不會像close一樣持續跳動）。
-        if st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]):
+        blocking_module = state.open_signal_owner(display_name, exclude_module="RSI2均值回歸")
+        if st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]) and blocking_module is not None:
+            logger.info(
+                "跨模塊曝險防護：%s 已被「%s」模塊持有中，RSI2均值回歸本輪不開新倉",
+                display_name, blocking_module,
+            )
+        elif st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]):
             entry_price = float(today["open"])
             stop_loss = float(yesterday["sl_price"])
             if entry_price > stop_loss:  # 理論上恆成立（策略本身的止損設計），防呆用
@@ -3565,6 +3606,14 @@ async def deep_scan_symbol(exchange_pool: dict, symbol: str) -> None:
         sym_state = state.get_symbol_state(symbol)
         if sym_state.open_signal is not None:
             return  # 這段期間可能已經有其他路徑產生訊號，避免重複建立
+
+        blocking_module = state.open_signal_owner(symbol, exclude_module="市場掃描")
+        if blocking_module is not None:
+            logger.info(
+                "跨模塊曝險防護：%s 已被「%s」模塊持有中，市場掃描本輪不開新倉",
+                symbol, blocking_module,
+            )
+            return
 
         if vetoed and not is_debug_target:
             logger.info(
