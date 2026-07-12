@@ -4298,20 +4298,25 @@ def _backtest_simulate_supertrend(df: pd.DataFrame, risk_reward: float, start_id
 # GOOGL/NVDA 還做過季度滾動式Walk-Forward驗證（GOOGL四個季度全數>66%勝率，
 # NVDA樣本外那一半甚至比樣本內更好）——是目前所有已測策略裡唯一「高勝率+
 # 通過樣本外驗證」的組合。只開放美股（不含加密貨幣：BTC/ETH/SOL版本勝率較低，
-# 49-61%，沒有這麼強），只開放這5檔已驗證過的標的，見 STOCK_MEANREV_SYMBOLS。
+# 49-61%，沒有這麼強），只開放這幾檔已驗證過的標的，見 STOCK_MEANREV_SYMBOLS。
 #
 # 策略邏輯（日線、只做多、單一持倉）：長期多頭濾網(收盤>SMA200) + RSI(2)<10
 # 深度超賣進場，止損固定在訊號根收盤價*0.94（約6%），止盈是動態的「反彈收回
 # SMA5之上」（指標穿越出場，不是固定價位）。
+#
+# 2026-07-12 顧問備忘錄複核：MSFT樣本外最新一季勝率崩到16.7%（均值回歸類策略
+# 常見的「效應隨時間變弱」現象，不是bug），已無持倉，完全移除（不只停實盤監控，
+# 回測沙盒/walk-forward/圖表端點也不再開放）。之後要重新檢視MSFT表現，需先手動
+# 把它加回這個常數。
 
-STOCK_MEANREV_SYMBOLS = ["NVDA", "GOOGL", "MSFT", "META", "AAPL"]
+STOCK_MEANREV_SYMBOLS = ["NVDA", "GOOGL", "META", "AAPL"]
 STOCK_MEANREV_RISK_PCT = 2.0  # 跟本機驗證用的 EngineConfig.risk_pct=0.02 一致
 STOCK_MEANREV_SL_PCT = 0.06   # 止損 = 訊號根收盤價 * (1 - 6%)，跟本機驗證版本一致
 STOCK_MEANREV_MAX_LEVERAGE = 5.0  # 固定6%止損通常換算出<1倍部位，這裡只當防呆上限，不是主要決定因素
 STOCK_MEANREV_CAVEAT = (
     "RSI(2) 均值回歸：2026-07-11 用近6年日線歷史資料驗證，NVDA/GOOGL 通過季度滾動式"
     "Walk-Forward（GOOGL四季度全數勝率>66%，NVDA樣本外比樣本內更好）；MSFT樣本外最新一季"
-    "勝率崩到16.7%，波動較大，请自行斟酌。均值回歸策略平均持倉僅1-3天，設計目標是高勝率"
+    "勝率崩到16.7%，已於2026-07-12移除監控。均值回歸策略平均持倉僅1-3天，設計目標是高勝率"
     "+低回撤，不是跟大盤比總報酬（例如NVDA六年總報酬遠遠跑輸單純買入持有）。"
 )
 

@@ -25,7 +25,7 @@ const STRATEGY_SYMBOLS: Record<BacktestStrategy, string[]> = {
   meme_volume_spike: ["WIF", "DOGE", "PEPE", "SHIB", "BONK"],
   us_stock_orb: ["NVDA", "TSLA", "SPY", "SMCI", "SPCX"],
   supertrend_btc_long: ["BTC"],
-  stock_rsi2_meanrev: ["NVDA", "GOOGL", "MSFT", "META", "AAPL"],
+  stock_rsi2_meanrev: ["NVDA", "GOOGL", "META", "AAPL"], // MSFT已於2026-07-12移除（樣本外最新一季勝率崩到16.7%），見後端 STOCK_MEANREV_SYMBOLS 說明
 }
 
 const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
