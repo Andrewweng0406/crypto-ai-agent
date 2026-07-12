@@ -1,14 +1,16 @@
 "use client"
 
-import { Star } from "lucide-react"
+import { AlertTriangle, Star } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type OptionsGexData, type USStockSignalState, formatPrice } from "@/lib/signals"
 
 interface FavoritesOverviewProps {
   optionsUnderlyings: OptionsGexData[]
   optionsLoading: boolean
+  optionsError?: string
   usStocks: USStockSignalState[]
   usStocksLoading: boolean
+  usStocksError?: string
   onSelectOptions: (symbol: string) => void
   onSelectUSStock: (symbol: string) => void
 }
@@ -17,15 +19,27 @@ interface FavoritesOverviewProps {
 // 純粹是「一眼掃過去」的快照卡片，不是完整功能——點卡片會跳去對應分頁看細節
 // （GEX剖面圖、開盤區間監控等）。兩邊自選清單的增刪都在各自分頁內完成，這裡
 // 只讀不編輯，維持這頁單純。
+//
+// 2026-07-12 稽核修復：原本沒有error prop，資料源掛掉時這個區塊會整個消失、
+// 沒有任何提示——這是首頁預設分頁，資料源掛掉卻靜默吞掉錯誤比直接顯示錯誤
+// 更危險。現在錯誤跟「你真的還沒加自選標的」分開處理，不會被誤判成同一種狀態。
 export function FavoritesOverview({
   optionsUnderlyings,
   optionsLoading,
+  optionsError,
   usStocks,
   usStocksLoading,
+  usStocksError,
   onSelectOptions,
   onSelectUSStock,
 }: FavoritesOverviewProps) {
-  const isEmpty = optionsUnderlyings.length === 0 && usStocks.length === 0 && !optionsLoading && !usStocksLoading
+  const isEmpty =
+    optionsUnderlyings.length === 0 &&
+    usStocks.length === 0 &&
+    !optionsLoading &&
+    !usStocksLoading &&
+    !optionsError &&
+    !usStocksError
 
   return (
     <div className="flex flex-col gap-6">
@@ -41,9 +55,15 @@ export function FavoritesOverview({
         </div>
       )}
 
-      {(optionsUnderlyings.length > 0 || optionsLoading) && (
+      {(optionsUnderlyings.length > 0 || optionsLoading || optionsError) && (
         <section className="flex flex-col gap-3">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">📊 期權分析</h3>
+          {optionsError && (
+            <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              無法載入期權分析資料：{optionsError}
+            </div>
+          )}
           <div className="flex flex-wrap gap-3">
             {optionsUnderlyings.map((u) => (
               <button
@@ -69,9 +89,15 @@ export function FavoritesOverview({
         </section>
       )}
 
-      {(usStocks.length > 0 || usStocksLoading) && (
+      {(usStocks.length > 0 || usStocksLoading || usStocksError) && (
         <section className="flex flex-col gap-3">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">美股 ORB</h3>
+          {usStocksError && (
+            <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              無法載入美股 ORB 資料：{usStocksError}
+            </div>
+          )}
           <div className="flex flex-wrap gap-3">
             {usStocks.map((s) => {
               const isOpen = s.status === "OPEN" && s.signal

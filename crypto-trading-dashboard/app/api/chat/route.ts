@@ -339,7 +339,16 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
     })
   }
-  const contextSymbol = typeof body.contextSymbol === "string" ? body.contextSymbol.slice(0, 40) : undefined
+  // 2026-07-12 稽核修復：contextSymbol 原本只裁切長度，沒有格式檢查，會被直接拼進
+  // system prompt——等於一個prompt injection破口（可以塞任意文字讓Claude誤判成
+  // 「可信系統上下文」）。這裡改成白名單，只接受這個系統裡真的會出現的標的格式
+  // （加密貨幣合約如 BTC/USDT:USDT、美股代號如 NVDA、BingX代幣化商品如
+  // NCSKAAPL2USD/USDT:USDT），格式不符就當作沒有帶標的，不拋錯（這欄位本來就是
+  // 選填的畫面上下文，不值得為了格式不對就擋掉整個對話請求）。
+  const SYMBOL_WHITELIST_PATTERN = /^[A-Za-z0-9/:._-]{1,40}$/
+  const rawContextSymbol = typeof body.contextSymbol === "string" ? body.contextSymbol.trim() : undefined
+  const contextSymbol =
+    rawContextSymbol && SYMBOL_WHITELIST_PATTERN.test(rawContextSymbol) ? rawContextSymbol : undefined
 
   const anthropic = new Anthropic({ apiKey })
   const systemPrompt = buildSystemPrompt(contextSymbol)

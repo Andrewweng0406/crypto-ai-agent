@@ -297,7 +297,11 @@ export function TradeDashboard() {
   const activeError = isBacktestMode || isHighWinRateMode
     ? undefined
     : isOverviewMode
-      ? (optionsGexError && usStocksError ? optionsGexError : undefined)
+      // 2026-07-12 稽核修復：原本要「兩個來源同時出錯」才顯示頂部錯誤橫幅，
+      // 單一來源失敗完全不會被看到。現在任一來源出錯就標示（優先顯示期權，
+      // 兩個都掛時哪個優先其實不重要），細節仍看 FavoritesOverview 內的
+      // 各自區塊錯誤訊息。
+      ? (optionsGexError ?? usStocksError)
       : isMemeMode
         ? memesError
         : isMemeTradeMode
@@ -390,8 +394,10 @@ export function TradeDashboard() {
         <FavoritesOverview
           optionsUnderlyings={optionsGexData.underlyings}
           optionsLoading={optionsGexLoading}
+          optionsError={optionsGexError?.message}
           usStocks={usStockData.stocks}
           usStocksLoading={usStocksLoading}
+          usStocksError={usStocksError?.message}
           onSelectOptions={(symbol) => {
             setSelectedSymbol(symbol)
             setMode("optionsAnalytics")
@@ -403,7 +409,7 @@ export function TradeDashboard() {
         />
       ) : isMemeMode ? (
         <>
-          <MemeRadar alerts={memeAlerts} watchlist={memeWatchlist} isLoading={memesLoading} error={undefined} />
+          <MemeRadar alerts={memeAlerts} watchlist={memeWatchlist} isLoading={memesLoading} error={memesError?.message} />
           <SqueezeFeed items={squeezeFeedItems} isLoading={squeezeFeedLoading} />
           <p className="text-center text-xs text-muted-foreground">
             迷因幣雷達為獨立功能：從迷因幣候選池依 24h 成交量動態排名監控前 10 大，純粹偵測現貨的成交量異常放大
@@ -575,7 +581,7 @@ export function TradeDashboard() {
               </button>
             ))}
           </div>
-          <NewsRadar items={filteredNewsItems} isLoading={newsLoading} error={undefined} />
+          <NewsRadar items={filteredNewsItems} isLoading={newsLoading} error={newsError?.message} />
           <p className="text-center text-xs text-muted-foreground">
             新聞（AI 智能輿情雷達）為獨立功能：背景每 10 分鐘掃描 CoinDesk / CoinTelegraph / Yahoo Finance / CNBC
             等公開新聞來源，交給 AI 判斷相關標的與情緒分數（-10~+10），純粹是資訊監控，
