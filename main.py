@@ -3912,9 +3912,19 @@ _backtest_rate_limit_log: Dict[str, List[float]] = {}
 
 
 def _backtest_client_ip(request: Request) -> str:
+    """
+    2026-07-12 稽核抓到的CRITICAL修復：原本取 X-Forwarded-For 的第一段——但那一段
+    是「上一個轉發者宣稱的來源」，客戶端自己在原始請求上帶這個標頭就能任意偽造，
+    每次換一個假值就能無限繞過下面的IP限流。Railway/Vercel這類單層受信任反向代理
+    的標準做法是：代理收到請求時，把「自己實際看到的連線來源」*附加*在標頭最後面，
+    所以取「最後一段」才是代理自己觀察到、客戶端無法偽造的值（客戶端能塞任意數量
+    的假值在前面，但代理接手後附加的最後一段是它自己寫的，不會被使用者的輸入覆蓋）。
+    """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -4585,9 +4595,13 @@ _watchlist_rate_limit_log: Dict[str, List[float]] = {}
 
 
 def _watchlist_client_ip(request: Request) -> str:
+    """同 _backtest_client_ip：取X-Forwarded-For最後一段（受信任代理自己附加的值），
+    不取第一段（客戶端可任意偽造），見該函式完整說明。"""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -5052,8 +5066,15 @@ async def add_options_watchlist(body: WatchlistAddRequest, request: Request) -> 
 
 
 @app.delete("/api/options/watchlist/{display_name}", response_model=WatchlistResponse)
-async def remove_options_watchlist(display_name: str) -> WatchlistResponse:
-    """移除一檔期權分析監控標的（不清對應的 GEX 歷史狀態，只是不再繼續刷新/顯示，重新加回來會馬上恢復）。"""
+async def remove_options_watchlist(display_name: str, request: Request) -> WatchlistResponse:
+    """
+    移除一檔期權分析監控標的（不清對應的 GEX 歷史狀態，只是不再繼續刷新/顯示，重新加回來會馬上恢復）。
+    2026-07-12 稽核修復：這個端點原本完全沒有限流（新增的POST有），任何知道或猜到
+    display_name的人都能無限次清空自選清單——補上跟其他公開端點同一組IP限流。
+    """
+    client_ip = _watchlist_client_ip(request)
+    if _watchlist_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
     async with state.lock:
         state.options_watchlist.pop(display_name.strip().upper(), None)
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
@@ -5568,12 +5589,16 @@ async def add_us_stock_watchlist(body: WatchlistAddRequest, request: Request) ->
 
 
 @app.delete("/api/us-stock/watchlist/{display_name}", response_model=WatchlistResponse)
-async def remove_us_stock_watchlist(display_name: str) -> WatchlistResponse:
+async def remove_us_stock_watchlist(display_name: str, request: Request) -> WatchlistResponse:
     """
     移除一檔美股ORB監控標的。若該標的目前正好有實盤部位持有中，不會被強制平倉
     ——部位會繼續留在 state.us_stock_states 裡正常監控到TP/SL觸發或收盤平倉
     （見 flatten_all_us_stock_positions），只是不再出現在自選清單/掃描名單。
+    2026-07-12 稽核修復：補上跟POST同一組IP限流，原本這個端點完全沒有防護。
     """
+    client_ip = _watchlist_client_ip(request)
+    if _watchlist_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
     async with state.lock:
         state.us_stock_watchlist.pop(display_name.strip().upper(), None)
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
@@ -5751,7 +5776,10 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
             atr_sl_mult, rr = MEME_TRADE_ATR_SL_MULTIPLIER, MEME_TRADE_RISK_REWARD_RATIO
 
         min_len = max(DONCHIAN_PERIOD, MEME_VOLUME_LOOKBACK, ATR_PERIOD, 60) + 2
-        all_trades = _backtest_simulate_htf(signals, atr_sl_mult, rr, min_len)
+        # 2026-07-12 稽核修復：模擬引擎是逐根K棒的同步Python迴圈，直接呼叫會卡住整個
+        # 事件迴圈（單一asyncio process），連每10秒該跑一次、負責真倉位停利停損的
+        # price_monitor_loop都會被延遲——丟進執行緒池才不會擋住其他背景迴圈。
+        all_trades = await asyncio.to_thread(_backtest_simulate_htf, signals, atr_sl_mult, rr, min_len)
         # 暖機用的那段歷史資料本身也可能產生訊號，但那不是使用者要求的回測窗口——
         # 用每筆交易自己的 entry_timestamp 篩（不是位置對位，訊號本來就不是每根
         # K棒都觸發，位置對位會把交易跟不相關的K棒時間錯誤配對，見這裡修正前的說明）。
@@ -5789,7 +5817,7 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
         days_ago_ms = pd.Timestamp.now(tz="UTC").value // 10**6 - days_range * 24 * 60 * 60 * 1000
         signals = _backtest_signals_supertrend_long(raw, length, mult)
         min_len = max(length, SUPERTREND_VOL_MA_LEN) + 2
-        all_trades = _backtest_simulate_supertrend(signals, rr, min_len)
+        all_trades = await asyncio.to_thread(_backtest_simulate_supertrend, signals, rr, min_len)
         trades = [t for t in all_trades if t["entry_timestamp"] >= days_ago_ms]
 
         summary = _backtest_summarize(trades)
@@ -5817,7 +5845,7 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
         days_ago_ms = pd.Timestamp.now(tz="UTC").value // 10**6 - days_range * 24 * 60 * 60 * 1000
         signals = _backtest_signals_rsi2_mean_reversion(raw)
         min_len = 201  # SMA200 需要200根暖機
-        all_trades = _backtest_simulate_indicator_cross(signals, "sma5", min_len)
+        all_trades = await asyncio.to_thread(_backtest_simulate_indicator_cross, signals, "sma5", min_len)
         trades = [t for t in all_trades if t["entry_timestamp"] >= days_ago_ms]
 
         summary = _backtest_summarize(trades)
@@ -5839,7 +5867,7 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
         raise HTTPException(status_code=502, detail=f"抓不到 {symbol_raw} 或大盤濾網(QQQ)的歷史K線，請確認代號是否正確")
 
     regime_df = _backtest_compute_regime_series(regime_raw)
-    trades = _backtest_simulate_us_stock_orb(symbol_raw, symbol_raw, raw, regime_df)
+    trades = await asyncio.to_thread(_backtest_simulate_us_stock_orb, symbol_raw, symbol_raw, raw, regime_df)
     summary = _backtest_summarize(trades)
 
     return BacktestResponse(
@@ -5903,30 +5931,16 @@ def _wf_run_combo(df: pd.DataFrame, length: int, mult: float, rr: float) -> dict
     }
 
 
-@app.post("/api/backtest/walk-forward", response_model=BacktestWalkForwardResponse)
-async def run_backtest_walk_forward(request: Request) -> BacktestWalkForwardResponse:
+def _run_supertrend_walk_forward_folds(full_df: pd.DataFrame) -> List[BacktestWalkForwardFold]:
     """
-    滾動式 Walk-Forward（樣本外）驗證，目前只支援 supertrend_btc_long——這是2026-07-11
-    完整調查唯一通過驗證的策略/標的組合，見 SUPERTREND_CAVEAT。不像 /api/backtest
-    那樣「使用者挑策略挑天數」，這個端點固定跑同一套方法論：12個月訓練窗+4個月測試窗
-    一起往前滑動，每一折都只在該折訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新
-    起始資金，不延續權益）算出樣本外表現，藉此檢驗「訓練期最佳參數」是否只是過擬合、
-    換個時間窗就崩潰——跟單次回測完全是不同層次的驗證，公開展示更誠實。
-
-    公開端點，比 /api/backtest 更吃運算資源（要抓3年歷史K線+跑36組參數x多折網格搜尋），
-    IP限流比照同一組規則。
+    網格搜尋+多折模擬本體，抽成獨立的同步函式——2026-07-12稽核抓到：這是逐根K棒的
+    同步Python迴圈(36組參數x最多5折=最多180次模擬)，直接寫在async路由裡會卡住整個
+    事件迴圈長達15-25秒，連每10秒該跑一次、負責真倉位停利停損的price_monitor_loop
+    都會被延遲。呼叫端改用 asyncio.to_thread 把這整段丟進執行緒池，不要卡住主迴圈
+    （不逐次呼叫都包一層to_thread——180次個別排程執行緒池的開銷本身就不小，整段
+    一次丟進去才是正確的粒度）。
     """
-    client_ip = _backtest_client_ip(request)
-    if _backtest_is_rate_limited(client_ip):
-        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {BACKTEST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
-
-    try:
-        full_df = await _backtest_fetch_crypto_history("BTC/USDT:USDT", SUPERTREND_WF_HISTORY_DAYS, "4h")
-    except HTTPException:
-        raise
-    if full_df.empty:
-        raise HTTPException(status_code=502, detail="抓不到 BTC/USDT:USDT 的歷史K線")
-
+    full_df = full_df.copy()
     full_df["dt"] = pd.to_datetime(full_df["timestamp"], unit="ms", utc=True)
     full_df = full_df.set_index("dt")
     data_end = full_df.index[-1]
@@ -5971,6 +5985,35 @@ async def run_backtest_walk_forward(request: Request) -> BacktestWalkForwardResp
             test_buy_hold_pct=round(_wf_buy_and_hold_pct(test_slice), 2),
         ))
         train_start = train_start + pd.DateOffset(months=SUPERTREND_WF_TEST_MONTHS)
+
+    return folds
+
+
+@app.post("/api/backtest/walk-forward", response_model=BacktestWalkForwardResponse)
+async def run_backtest_walk_forward(request: Request) -> BacktestWalkForwardResponse:
+    """
+    滾動式 Walk-Forward（樣本外）驗證，目前只支援 supertrend_btc_long——這是2026-07-11
+    完整調查唯一通過驗證的策略/標的組合，見 SUPERTREND_CAVEAT。不像 /api/backtest
+    那樣「使用者挑策略挑天數」，這個端點固定跑同一套方法論：12個月訓練窗+4個月測試窗
+    一起往前滑動，每一折都只在該折訓練窗上重新網格搜尋最佳參數，套進該折測試窗（全新
+    起始資金，不延續權益）算出樣本外表現，藉此檢驗「訓練期最佳參數」是否只是過擬合、
+    換個時間窗就崩潰——跟單次回測完全是不同層次的驗證，公開展示更誠實。
+
+    公開端點，比 /api/backtest 更吃運算資源（要抓3年歷史K線+跑36組參數x多折網格搜尋），
+    IP限流比照同一組規則。
+    """
+    client_ip = _backtest_client_ip(request)
+    if _backtest_is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {BACKTEST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
+
+    try:
+        full_df = await _backtest_fetch_crypto_history("BTC/USDT:USDT", SUPERTREND_WF_HISTORY_DAYS, "4h")
+    except HTTPException:
+        raise
+    if full_df.empty:
+        raise HTTPException(status_code=502, detail="抓不到 BTC/USDT:USDT 的歷史K線")
+
+    folds = await asyncio.to_thread(_run_supertrend_walk_forward_folds, full_df)
 
     if not folds:
         raise HTTPException(status_code=502, detail="資料長度不足以跑滿一折訓練+測試窗，請稍後再試")
@@ -6032,6 +6075,34 @@ def _stock_meanrev_run_fold(df: pd.DataFrame, label: str) -> StockWalkForwardFol
     )
 
 
+def _run_stock_walk_forward_folds(raw: pd.DataFrame) -> Optional[List[StockWalkForwardFold]]:
+    """
+    切分+多折模擬本體，抽成獨立同步函式——2026-07-12稽核修復：雖然只有7折（比
+    SuperTrend那個端點的最多180次模擬輕很多），但每折都是逐根K棒的同步Python迴圈
+    跑在~7年日線資料上，一樣不該直接卡在事件迴圈裡，呼叫端改用asyncio.to_thread。
+    回傳 None 代表暖機後剩餘資料量不足，呼叫端自行轉成 502。
+    """
+    signals = _backtest_signals_rsi2_mean_reversion(raw)
+    df = signals.dropna(subset=["sma200", "sma5", "rsi2"]).reset_index(drop=True)
+    if len(df) < 40:
+        return None
+
+    full = _stock_meanrev_run_fold(df, "全期間")
+    mid = len(df) // 2
+    front_half = _stock_meanrev_run_fold(df.iloc[:mid], "前50%")
+    back_half = _stock_meanrev_run_fold(df.iloc[mid:], "後50%")
+
+    n_folds = 4
+    fold_size = len(df) // n_folds
+    quarters: List[StockWalkForwardFold] = []
+    for i in range(n_folds):
+        s = i * fold_size
+        e = len(df) if i == n_folds - 1 else (i + 1) * fold_size
+        quarters.append(_stock_meanrev_run_fold(df.iloc[s:e], f"Q{i + 1}"))
+
+    return [full, front_half, back_half] + quarters
+
+
 @app.post("/api/backtest/stock-walk-forward", response_model=StockWalkForwardResponse)
 async def run_stock_walk_forward(request: Request, symbol: str = "NVDA") -> StockWalkForwardResponse:
     """
@@ -6057,31 +6128,17 @@ async def run_stock_walk_forward(request: Request, symbol: str = "NVDA") -> Stoc
     if raw.empty:
         raise HTTPException(status_code=502, detail=f"抓不到 {symbol_raw} 的日線歷史K線")
 
-    signals = _backtest_signals_rsi2_mean_reversion(raw)
-    df = signals.dropna(subset=["sma200", "sma5", "rsi2"]).reset_index(drop=True)
-    if len(df) < 40:
+    folds = await asyncio.to_thread(_run_stock_walk_forward_folds, raw)
+    if folds is None:
         raise HTTPException(status_code=502, detail="暖機後剩餘資料量不足以切分驗證，請稍後再試")
 
-    full = _stock_meanrev_run_fold(df, "全期間")
-    mid = len(df) // 2
-    front_half = _stock_meanrev_run_fold(df.iloc[:mid], "前50%")
-    back_half = _stock_meanrev_run_fold(df.iloc[mid:], "後50%")
-
-    n_folds = 4
-    fold_size = len(df) // n_folds
-    quarters: List[StockWalkForwardFold] = []
-    for i in range(n_folds):
-        s = i * fold_size
-        e = len(df) if i == n_folds - 1 else (i + 1) * fold_size
-        quarters.append(_stock_meanrev_run_fold(df.iloc[s:e], f"Q{i + 1}"))
-
-    q_win_rates = [q.win_rate for q in quarters if q.total_trades > 0]
+    q_win_rates = [f.win_rate for f in folds if f.fold.startswith("Q") and f.total_trades > 0]
     all_pass = bool(q_win_rates) and all(w >= 50 for w in q_win_rates)
     min_q = min(q_win_rates) if q_win_rates else 0.0
 
     return StockWalkForwardResponse(
         symbol=symbol_raw,
-        folds=[full, front_half, back_half] + quarters,
+        folds=folds,
         all_quarters_pass_50pct=all_pass,
         min_quarter_win_rate=round(min_q, 2),
         caveat=STOCK_MEANREV_CAVEAT,

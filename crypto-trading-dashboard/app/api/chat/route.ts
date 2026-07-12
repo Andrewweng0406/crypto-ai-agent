@@ -34,8 +34,14 @@ const RATE_LIMIT_MAX_TRACKED_IPS = 5000 // 防止長時間warm的執行個體累
 const requestLog = new Map<string, number[]>()
 
 function getClientIp(req: Request): string {
+  // 2026-07-12 稽核修復：原本取第一段，但那是客戶端自己在原始請求上就能任意偽造的值
+  // （每次換一個假IP就能無限繞過下面的限流）。Vercel edge是單層受信任代理，會把自己
+  // 實際觀察到的連線來源*附加*在標頭最後面，取最後一段才是使用者無法覆蓋的值。
   const forwarded = req.headers.get("x-forwarded-for")
-  if (forwarded) return forwarded.split(",")[0].trim()
+  if (forwarded) {
+    const parts = forwarded.split(",").map((p) => p.trim()).filter(Boolean)
+    if (parts.length > 0) return parts[parts.length - 1]
+  }
   return req.headers.get("x-real-ip") ?? "unknown"
 }
 

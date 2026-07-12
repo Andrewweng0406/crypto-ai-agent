@@ -16,7 +16,7 @@ export function PriceRangeGauge({ signal }: { signal: Signal }) {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Position Range</h2>
         <span className="font-mono text-xs text-muted-foreground">
-          {toSl}% to TP left
+          {toTp}% to TP left
         </span>
       </div>
 

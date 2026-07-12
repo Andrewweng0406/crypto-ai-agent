@@ -611,7 +611,12 @@ export function formatPrice(value: number): string {
   // sub-cent (PEPE ~$0.0000027) — a fixed 2-decimal format would round
   // those straight to $0.00 and hide the price entirely, so precision
   // scales with magnitude instead.
-  const decimals = value >= 100 ? 2 : value >= 1 ? 4 : value >= 0.01 ? 6 : 8
+  // 2026-07-12 audit fix: the magnitude check must use the absolute value —
+  // a negative PnL diff (e.g. -500 on a losing position) failed every ">="
+  // branch since it's less than 0.01, falling through to 8 decimals and
+  // rendering "-500.00000000" on the Hero card that shows real position PnL.
+  const magnitude = Math.abs(value)
+  const decimals = magnitude >= 100 ? 2 : magnitude >= 1 ? 4 : magnitude >= 0.01 ? 6 : 8
   return value.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,

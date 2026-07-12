@@ -624,32 +624,7 @@ export function TradeDashboard() {
       ) : (
         <>
           {mode === "major" ? (
-            <>
-              <SymbolWatchlist signals={signals} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
-
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-mono text-sm font-semibold text-muted-foreground">💥 幣圈爆倉密度清算牆</h2>
-                  <div className="flex gap-1 rounded-full border border-border/60 bg-card p-1">
-                    {liquidationWalls.map((w) => (
-                      <button
-                        key={w.symbol}
-                        type="button"
-                        onClick={() => setLiquidationSymbol(w.symbol)}
-                        className={`rounded-full px-3 py-1 font-mono text-xs font-semibold transition-colors ${
-                          liquidationSymbol === w.symbol
-                            ? "bg-primary text-primary-foreground"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {w.symbol}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {selectedLiquidationWall && <LiquidationHeatmapChart data={selectedLiquidationWall} />}
-              </div>
-            </>
+            <SymbolWatchlist signals={signals} selectedSymbol={selectedSymbol} onSelect={setSelectedSymbol} />
           ) : (
             <>
               <OpportunityList
@@ -704,6 +679,31 @@ export function TradeDashboard() {
               <RecentHistory history={history} stats={stats} error={historyError?.message} />
             </div>
           </div>
+
+          {mode === "major" && (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <h2 className="font-mono text-sm font-semibold text-muted-foreground">💥 幣圈爆倉密度清算牆</h2>
+                <div className="flex gap-1 rounded-full border border-border/60 bg-card p-1">
+                  {liquidationWalls.map((w) => (
+                    <button
+                      key={w.symbol}
+                      type="button"
+                      onClick={() => setLiquidationSymbol(w.symbol)}
+                      className={`rounded-full px-3 py-1 font-mono text-xs font-semibold transition-colors ${
+                        liquidationSymbol === w.symbol
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {w.symbol}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {selectedLiquidationWall && <LiquidationHeatmapChart data={selectedLiquidationWall} />}
+            </div>
+          )}
         </>
       )}
 
