@@ -3575,6 +3575,34 @@ async def deep_scan_symbol(exchange_pool: dict, symbol: str) -> None:
     if candidate is None:
         return
 
+    # 2026-07-14 修復：detect_new_signal() 的 entry_price 來自「最近一根已收盤」K棒
+    # 的收盤價，但這個函式每 DEEP_SCAN_INTERVAL_SECONDS 秒才跑一次、且掃描名單是
+    # 分批輪流檢查（pick_scan_universe_chunk），從那根K棒收盤到真正要開倉之間可能
+    # 已經過了數分鐘。若直接拿這個已經過時的收盤價當進場價去算SL/TP，遇到單根K棒
+    # 內就大幅波動的標的（尤其流動性較薄的小型幣），可能一開倉當下、即時價格早就
+    # 已經穿越算出來的停損位——部位等於一開始就已經是虧損的，下一次報價輪詢（10秒
+    # 一次）立刻觸發停損。這正是 2026-07-13 ALLO/USDT:USDT 那筆「開倉11秒後就停損」
+    # 的根本原因（確認：K棒本身在收盤價0.5136附近觸發突破，但同一根K棒最低價已經
+    # 跌到0.468，等到訊號真正被寫入時即時價格早已跌破停損位）。這裡改用當下最新
+    # 報價當進場價；如果即時價格已經反向到讓突破失效，直接放棄這次訊號，不追一個
+    # 已經過期的假突破。
+    if not is_debug_target:
+        async with state.lock:
+            live_price = state.get_symbol_state(symbol).current_price
+
+        if live_price is not None and live_price > 0:
+            donchian_upper = float(last_row["donchian_upper"]) if pd.notna(last_row["donchian_upper"]) else None
+            donchian_lower = float(last_row["donchian_lower"]) if pd.notna(last_row["donchian_lower"]) else None
+            breakout_invalidated = (
+                candidate["side"] == "Long" and donchian_upper is not None and live_price <= donchian_upper
+            ) or (
+                candidate["side"] == "Short" and donchian_lower is not None and live_price >= donchian_lower
+            )
+            if breakout_invalidated:
+                logger.info("市場掃描：%s 突破已失效（即時價格已回到唐奇安通道內），放棄本次訊號", symbol)
+                return
+            candidate["entry_price"] = live_price
+
     # 主流幣有背景定期刷新的聰明錢快取可直接用；掃描名單的幣種平常不養這份資料，
     # 只有真的出現候選訊號時才臨時抓一次，避免每輪對數十檔都打資金費率/OI API。
     if symbol in MAJOR_SYMBOLS:
