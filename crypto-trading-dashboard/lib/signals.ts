@@ -967,7 +967,7 @@ export function adaptAssistantBroadcasts(raw: BackendAssistantBroadcastResponse)
 // ---------------------------------------------------------------------------
 
 export type BacktestStrategy =
-  | "crypto_donchian_1h"
+  | "crypto_donchian_4h"
   | "meme_volume_spike"
   | "us_stock_orb"
   | "supertrend_btc_long"

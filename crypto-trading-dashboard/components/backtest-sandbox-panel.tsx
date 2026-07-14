@@ -21,7 +21,7 @@ import {
 // 額度換來一個502。supertrend_btc_long 只有BTC一檔，見後端SUPERTREND_CAVEAT說明：
 // 2026-07-11完整調查只有「只做多、僅BTCUSDT」版本通過樣本外驗證。
 const STRATEGY_SYMBOLS: Record<BacktestStrategy, string[]> = {
-  crypto_donchian_1h: ["BTC", "ETH", "SOL"],
+  crypto_donchian_4h: ["BTC", "ETH", "SOL"],
   meme_volume_spike: ["WIF", "DOGE", "PEPE", "SHIB", "BONK"],
   us_stock_orb: ["NVDA", "TSLA", "SPY", "SMCI", "SPCX"],
   supertrend_btc_long: ["BTC"],
@@ -29,7 +29,7 @@ const STRATEGY_SYMBOLS: Record<BacktestStrategy, string[]> = {
 }
 
 const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
-  crypto_donchian_1h: "1H 唐奇安突破（主流幣）",
+  crypto_donchian_4h: "4H 唐奇安突破（主流幣）",
   meme_volume_spike: "1H 爆量當沖（迷因幣）",
   us_stock_orb: "開盤區間突破（美股ORB）",
   supertrend_btc_long: "SuperTrend 爆量狙擊手（只做多，僅BTC）",
@@ -37,7 +37,7 @@ const STRATEGY_LABELS: Record<BacktestStrategy, string> = {
 }
 
 const STRATEGY_MAX_DAYS: Record<BacktestStrategy, number> = {
-  crypto_donchian_1h: 180,
+  crypto_donchian_4h: 180,
   meme_volume_spike: 180,
   us_stock_orb: 60, // yfinance 15分鐘K線真實上限，見後端 BACKTEST_YF_MAX_DAYS 說明
   supertrend_btc_long: 180,
@@ -79,8 +79,8 @@ const stockWalkForwardFetcher = async (symbol: string): Promise<BackendStockWalk
 // 只支援三個有真實歷史資料源的策略。公開端點，後端有IP限流（15次/小時）
 // 防止被用來刷爆外部交易所/yfinance API額度。
 export function BacktestSandboxPanel() {
-  const [strategy, setStrategy] = useState<BacktestStrategy>("crypto_donchian_1h")
-  const [symbol, setSymbol] = useState<string>(STRATEGY_SYMBOLS.crypto_donchian_1h[0])
+  const [strategy, setStrategy] = useState<BacktestStrategy>("crypto_donchian_4h")
+  const [symbol, setSymbol] = useState<string>(STRATEGY_SYMBOLS.crypto_donchian_4h[0])
   const [daysRange, setDaysRange] = useState<number>(30)
   const [stLength, setStLength] = useState<number>(10)
   const [stMultiplier, setStMultiplier] = useState<number>(3.0)

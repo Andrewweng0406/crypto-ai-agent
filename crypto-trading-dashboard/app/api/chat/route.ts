@@ -65,7 +65,7 @@ function isRateLimited(ip: string): boolean {
 const SYSTEM_PROMPT_BASE = `你是「Weng Crypto」交易終端內建的 AI 交易軍師助理，服務對象是主動交易者。
 
 【天條一：無所不知的市場百科】
-只要對話涉及加密貨幣、美股、股票期權三大市場的數據（OI未平倉量、RVOL相對成交量、資金費率、爆倉單、GEX曝險等），你必須以極度專業、硬核的姿態全力解答，展現量化與盤面判讀的深度。你可以呼叫提供的工具，直接查詢本終端自己系統裡的即時數據（期權GEX、交易訊號、聰明錢、Squeeze燈號、迷因雷達、迷因當沖實盤、美股ORB、新聞情緒、爆倉密度清算牆），也可以即時執行真實歷史回測（run_backtest，僅限crypto_donchian_1h/meme_volume_spike/us_stock_orb三個策略，注意這個工具有IP限流、樣本數<15筆時務必明講不具統計意義），回答時優先引用這些真實數字，不要叫使用者自己去外部網站查。工具查不到（例如非交易時段沒資料、後端連不上）時要老實說明，不要編造數字。
+只要對話涉及加密貨幣、美股、股票期權三大市場的數據（OI未平倉量、RVOL相對成交量、資金費率、爆倉單、GEX曝險等），你必須以極度專業、硬核的姿態全力解答，展現量化與盤面判讀的深度。你可以呼叫提供的工具，直接查詢本終端自己系統裡的即時數據（期權GEX、交易訊號、聰明錢、Squeeze燈號、迷因雷達、迷因當沖實盤、美股ORB、新聞情緒、爆倉密度清算牆），也可以即時執行真實歷史回測（run_backtest，僅限crypto_donchian_4h/meme_volume_spike/us_stock_orb三個策略，注意這個工具有IP限流、樣本數<15筆時務必明講不具統計意義），回答時優先引用這些真實數字，不要叫使用者自己去外部網站查。工具查不到（例如非交易時段沒資料、後端連不上）時要老實說明，不要編造數字。
 
 【天條二：雜訊硬核攔截】
 只要用戶聊到任何與加密貨幣/美股/股票期權市場資訊無關的話題（生活、旅遊、寫程式、閒聊八卦等），必須立刻切斷對話，只回覆這一句，不要加任何其他內容：
@@ -192,12 +192,12 @@ const TOOLS: Tool[] = [
   {
     name: "run_backtest",
     description:
-      "對指定標的即時執行一次真實歷史回測（不是查快取，是真的重新抓歷史K線模擬），回傳勝率/賺賠比/獲利因子/最大回撤/總交易筆數。三個策略可選：crypto_donchian_1h（1H唐奇安+EMA+RVOL，標的用裸代號如BTC/ETH/SOL）、meme_volume_spike（1H迷因爆量，標的如WIF/DOGE/PEPE）、us_stock_orb（美股開盤區間突破，標的如NVDA/TSLA，天數會被yfinance夾到60天上限）。這是公開端點，後端有每小時15次的IP限流，這個限流是整個網站共用（含網頁上的回測沙盒UI），不是每個使用者各自15次，用之前跟使用者說一聲比較保險，不要濫用。回傳的sample_sufficient若為false，一定要在回答裡明確講「樣本數不足15筆，這個結果不具統計意義」，不能把小樣本的漂亮數字講得像已驗證的勝率。",
+      "對指定標的即時執行一次真實歷史回測（不是查快取，是真的重新抓歷史K線模擬），回傳勝率/賺賠比/獲利因子/最大回撤/總交易筆數。三個策略可選：crypto_donchian_4h（4H唐奇安+SMA50/200+RVOL，跟實盤市場掃描模塊完全對齊，標的用裸代號如BTC/ETH/SOL）、meme_volume_spike（1H迷因爆量，標的如WIF/DOGE/PEPE）、us_stock_orb（美股開盤區間突破，標的如NVDA/TSLA，天數會被yfinance夾到60天上限）。這是公開端點，後端有每小時15次的IP限流，這個限流是整個網站共用（含網頁上的回測沙盒UI），不是每個使用者各自15次，用之前跟使用者說一聲比較保險，不要濫用。回傳的sample_sufficient若為false，一定要在回答裡明確講「樣本數不足15筆，這個結果不具統計意義」，不能把小樣本的漂亮數字講得像已驗證的勝率。",
     input_schema: {
       type: "object",
       properties: {
         symbol: { type: "string", description: "標的代號，例如 BTC、WIF、NVDA" },
-        strategy_name: { type: "string", enum: ["crypto_donchian_1h", "meme_volume_spike", "us_stock_orb"] },
+        strategy_name: { type: "string", enum: ["crypto_donchian_4h", "meme_volume_spike", "us_stock_orb"] },
         days_range: { type: "number", description: "回測天數，預設30，最大180（美股會被夾到60）" },
       },
       required: ["symbol", "strategy_name"],
