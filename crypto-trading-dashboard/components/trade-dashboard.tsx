@@ -74,6 +74,7 @@ import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
 import { WatchlistEditor } from "@/components/watchlist-editor"
 import { FavoritesOverview } from "@/components/favorites-overview"
+import { ThemeToggle } from "@/components/theme-toggle"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -481,13 +482,16 @@ export function TradeDashboard() {
             <span className="text-xs text-muted-foreground">AI Signal Terminal</span>
           </div>
         </div>
-        <div
-          className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${
-            activeError ? "border-short/40 bg-short/10 text-short" : "border-border/60 bg-card text-muted-foreground"
-          }`}
-        >
-          <Activity className={`size-3.5 ${isConnected ? "text-long" : ""}`} aria-hidden="true" />
-          {statusLabel}
+        <div className="flex items-center gap-2.5">
+          <div
+            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${
+              activeError ? "border-short/40 bg-short/10 text-short" : "border-border/60 bg-card text-muted-foreground"
+            }`}
+          >
+            <Activity className={`size-3.5 ${isConnected ? "text-long" : ""}`} aria-hidden="true" />
+            {statusLabel}
+          </div>
+          <ThemeToggle />
         </div>
       </header>
 

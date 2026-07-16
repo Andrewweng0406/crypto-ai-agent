@@ -20,9 +20,18 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'dark',
-  themeColor: '#0b0e14',
+  colorScheme: 'light dark',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ece6db' },
+    { media: '(prefers-color-scheme: dark)', color: '#1b1712' },
+  ],
 }
+
+// 2026-07-15 降壓改版：這段內嵌 script 必須在 React hydrate 之前、畫面
+// 第一次繪製之前就跑完，才不會先閃一下錯誤的主題再跳回正確的（FOUC）。
+// 這裡的 'weng-crypto-theme' 字串跟 lib/theme.ts 的 THEME_STORAGE_KEY
+// 常數必須手動保持一致——這支 script 不能 import 任何模組。
+const themeInitScript = `(function(){try{var s=localStorage.getItem('weng-crypto-theme');var d=s?s==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;if(d)document.documentElement.classList.add('dark')}catch(e){}})()`
 
 export default function RootLayout({
   children,
@@ -31,6 +40,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`bg-background ${inter.variable} ${jetbrainsMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className="font-sans antialiased">{children}</body>
     </html>
   )
