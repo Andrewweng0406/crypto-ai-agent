@@ -43,6 +43,17 @@ def test_no_signal_when_atr_implies_absurd_stop_loss(ohlcv_factory):
     assert detect_new_signal(df) is None
 
 
+def test_no_signal_when_volatility_too_low_for_leverage_model(ohlcv_factory):
+    # 2026-07-15真實發生過的案例：XAUT/USDT:USDT（黃金錨定代幣，非真正加密貨幣）
+    # 波動率長期只有0.1%-3%，ATR算出的停損距離窄到讓固定風險槓桿模型直接拉滿20倍
+    # 槓桿去賭雜訊等級的波動，單筆虧損13%。high_low_range 調小模擬這種「這隻標的
+    # 天生就不太會動」的K棒。
+    df = add_indicators(
+        ohlcv_factory(direction="up", breakout=True, volume_spike=True, high_low_range=0.05)
+    )
+    assert detect_new_signal(df) is None
+
+
 def test_build_open_signal_long_tp_above_sl_below_entry():
     signal = {"side": "Long", "entry_price": 100.0, "atr": 2.0}
     opened = build_open_signal("BTC/USDT:USDT", signal)

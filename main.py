@@ -130,6 +130,16 @@ RISK_REWARD_RATIO = 2.0      # 止盈距離 = 止損距離 * 盈虧比
 # 比事後才發現止盈是負的、部位卡住永遠平不了倉安全。
 MAX_SANE_STOP_LOSS_PCT = 50.0
 
+# 2026-07-15新增：跟上面MAX_SANE_STOP_LOSS_PCT對稱的下限防呆。市場掃描名單是依24h
+# 成交量排名動態選出來的，NON_CRYPTO_BASE_PREFIXES只排除得了BingX自家包裝的「NC」
+# 開頭代幣化商品，排除不了XAUT（Tether Gold，掛在正常perp市場）這類本質上是商品/
+# 法幣錨定、波動率天生就遠低於一般加密貨幣的資產（實測日波動長期只有0.1%-3%，
+# 一般山寨幣是5-15%起跳）。固定風險槓桿模型（calculate_leverage）看到停損距離窄
+# 就會自動拉高槓桿，隱含假設是「停損窄=強力突破、高把握」，但對這類資產來說停損窄
+# 只是因為它天生不太會動——結果是在近乎雜訊的波動上開到封頂槓桿。真實案例：
+# XAUT/USDT:USDT 停損距離僅0.65%，直接拉滿20倍槓桿，單筆虧損13%。
+MIN_SANE_STOP_LOSS_PCT = 1.0
+
 FIXED_RISK_PCT = 15.0        # 固定風險模型：單筆爆倉風險目標百分比
 MIN_LEVERAGE = 1
 MAX_LEVERAGE = 20
@@ -998,6 +1008,7 @@ class RSI2StockState:
         self.rsi2: Optional[float] = None
         self.rsi2_is_confirmed: bool = False
         self.open_signal: Optional[dict] = None
+        self.triggered_date: Optional[str] = None  # 避免同一天內反覆開平倉，見 scan_rsi2_stock 說明
         self.last_updated: Optional[str] = None
 
 
@@ -1244,9 +1255,12 @@ def detect_new_signal(df: pd.DataFrame) -> Optional[dict]:
 
     # 防呆：ATR 算出來的止損距離本身就先超過進場價的 MAX_SANE_STOP_LOSS_PCT，
     # 代表這隻幣現在處於不正常的暴漲暴跌，不適合套用這套風險模型，直接不產生訊號
-    # （細節見 MAX_SANE_STOP_LOSS_PCT 定義處的說明）。
+    # （細節見 MAX_SANE_STOP_LOSS_PCT 定義處的說明）。同理，停損距離「窄過」
+    # MIN_SANE_STOP_LOSS_PCT 代表這隻標的波動率天生就太低（例如XAUT這類商品錨定
+    # 代幣），固定風險槓桿模型會誤判成「高把握突破」而拉滿槓桿去賭雜訊，一樣不產生
+    # 訊號（細節見 MIN_SANE_STOP_LOSS_PCT 定義處的說明）。
     projected_sl_pct = (atr * ATR_SL_MULTIPLIER) / entry_price * 100 if entry_price > 0 else float("inf")
-    if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT:
+    if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT or projected_sl_pct < MIN_SANE_STOP_LOSS_PCT:
         return None
 
     if long_breakout and uptrend:
@@ -3272,12 +3286,22 @@ async def scan_rsi2_stock(display_name: str) -> None:
         st.rsi2 = float(today["rsi2"]) if pd.notna(today["rsi2"]) else None
         # 美股收盤（16:00 ET）以後，yfinance的「今天」那根K棒就是真正的確認收盤，
         # 不再是估算值；開盤前/盤中則還在跳動，是估算值。
+        today_et = datetime.now(ZoneInfo(US_MARKET_TZ)).date()
         st.rsi2_is_confirmed = not _is_us_market_active(datetime.now(ZoneInfo(US_MARKET_TZ)))
 
         if st.open_signal is not None:
             side = st.open_signal
             hit_sl = float(today["low"]) <= side["stop_loss"]
-            hit_tp = current_price > st.sma5 if st.sma5 is not None else False
+            # 2026-07-15修復：止盈（收復SMA5）不能用盤中還在跳動的估算收盤價判斷——
+            # sma5跟current_price都是同一根「今天還沒收盤」的K棒即時估算出來的，
+            # 兩者在盤中會自然地上下交錯震盪，若每輪(60秒)都拿這個判斷止盈，會在
+            # 同一天內反覆觸發「止盈→(進場條件仍成立)立即重開倉→再次止盈」，一天
+            # 內灌出幾十筆假交易，全部因為剛好在價格瞬間站上SMA5的那個當下結算，
+            # 而不是真正代表當天收盤真的站穩SMA5之上（實際觀察到的案例：GOOGL
+            # 30筆連續WIN，entry/stop_loss完全相同，opened_at/closed_at每次只差
+            # 60-90秒）。改成只在收盤確認後才判斷止盈，跟進場「只認確認收盤訊號」
+            # 是同一套紀律。
+            hit_tp = st.rsi2_is_confirmed and st.sma5 is not None and current_price > st.sma5
 
             if hit_sl or hit_tp:
                 exit_price = side["stop_loss"] if hit_sl else current_price
@@ -3308,8 +3332,15 @@ async def scan_rsi2_stock(display_name: str) -> None:
 
         # 只在收盤已確認、昨天訊號成立、且目前沒有部位時才考慮開新倉——進場價用
         # 「今天的開盤價」（yfinance當天K棒的open欄位一開盤就固定，不會像close一樣持續跳動）。
+        # 2026-07-15新增 triggered_date 防呆：同一個交易日內，不管今天稍早是用SL還是TP
+        # 結算過部位，都不再重開——避免上面止盈修好後，若同一天內先合法止盈一次，
+        # 卻又因為進場條件（昨天訊號+今天開盤價）沒變而在同一天內再開第二次倉，
+        # 跟美股ORB模塊的 triggered_date 是同一套邏輯。
+        already_traded_today = st.triggered_date == today_et.isoformat()
         blocking_module = state.open_signal_owner(display_name, exclude_module="RSI2均值回歸")
-        if st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]) and blocking_module is not None:
+        if st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]) and already_traded_today:
+            pass  # 今天已經開過一次倉，避免同一天內反覆進出
+        elif st.open_signal is None and bool(yesterday["entry_signal"]) and pd.notna(today["open"]) and blocking_module is not None:
             logger.info(
                 "跨模塊曝險防護：%s 已被「%s」模塊持有中，RSI2均值回歸本輪不開新倉",
                 display_name, blocking_module,
@@ -3321,6 +3352,7 @@ async def scan_rsi2_stock(display_name: str) -> None:
                 st.open_signal = {
                     "entry_price": entry_price, "stop_loss": stop_loss, "opened_at": now_iso,
                 }
+                st.triggered_date = today_et.isoformat()
                 sma5_hint = f"{st.sma5:.2f}" if st.sma5 is not None else "N/A"
                 entry_notification = (
                     f"🎯 <b>RSI(2)均值回歸 進場訊號</b>\n{display_name} Long\n"
@@ -3839,9 +3871,9 @@ def save_state_snapshot() -> None:
             "options_watchlist": state.options_watchlist,
             "us_stock_watchlist": state.us_stock_watchlist,
             "rsi2_states": {
-                symbol: {"open_signal": s.open_signal}
+                symbol: {"open_signal": s.open_signal, "triggered_date": s.triggered_date}
                 for symbol, s in state.rsi2_states.items()
-                if s.open_signal is not None
+                if s.open_signal is not None or s.triggered_date is not None
             },
             "rsi2_history": list(state.rsi2_history),
         }
@@ -3852,6 +3884,38 @@ def save_state_snapshot() -> None:
         os.replace(tmp_path, STATE_SNAPSHOT_PATH)  # 原子性覆蓋，避免寫到一半時被讀到壞檔
     except Exception as exc:  # noqa: BLE001
         logger.warning("寫入狀態快照失敗：%s", exc)
+
+
+def _purge_duplicate_rsi2_history(history: list) -> list:
+    """
+    2026-07-15 資料清理：修復前的 RSI2 盤中止盈誤判 bug（見 scan_rsi2_stock 說明）
+    會讓同一檔標的在同一天內反覆開平倉，產生entry_price/stop_loss完全相同的一長串
+    假交易紀錄（實際案例：GOOGL 一天內灌出30筆，全部同一組entry_price/stop_loss）。
+    真實交易的entry_price是浮點數（取自yfinance當天開盤價），兩筆真正不同交易巧合
+    出現完全相同entry_price+stop_loss的機率趨近於零，所以用這個當「這是bug產生的
+    假紀錄」的判斷依據——同一組(symbol, entry_price, stop_loss)出現2次以上的，
+    整組都不採信（不是只丟棄多餘的，因為連第一筆的出場也是用同一套有問題的盤中
+    估算值判斷出來的，一樣不可信）。每次啟動都會跑，乾淨的資料跑起來是no-op。
+    """
+    groups: dict = {}
+    for record in history:
+        key = (record.get("symbol"), record.get("entry_price"), record.get("stop_loss"))
+        groups.setdefault(key, []).append(record)
+
+    dropped = 0
+    cleaned: list = []
+    for records in groups.values():
+        if len(records) >= 2:
+            dropped += len(records)
+            continue
+        cleaned.extend(records)
+
+    if dropped:
+        logger.warning("清理掉 %d 筆疑似RSI2盤中誤判產生的重複假交易紀錄", dropped)
+
+    # 依 closed_at 由新到舊排序，保持跟原本 rsi2_history（appendleft）一致的順序。
+    cleaned.sort(key=lambda r: r.get("closed_at") or "", reverse=True)
+    return cleaned
 
 
 def load_state_snapshot() -> None:
@@ -3944,7 +4008,9 @@ def load_state_snapshot() -> None:
         for symbol, data in snapshot.get("rsi2_states", {}).items():
             rsi2_st = state.get_rsi2_state(symbol)
             rsi2_st.open_signal = data.get("open_signal")
-        state.rsi2_history.extend(snapshot.get("rsi2_history", []))
+            rsi2_st.triggered_date = data.get("triggered_date")
+        restored_rsi2_history = _purge_duplicate_rsi2_history(snapshot.get("rsi2_history", []))
+        state.rsi2_history.extend(restored_rsi2_history)
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
         restored_us_stock_positions = sum(
@@ -4481,8 +4547,8 @@ def _backtest_simulate_htf(df: pd.DataFrame, atr_sl_mult: float, rr: float, star
                 stop_loss, take_profit = entry_price + sl_distance, entry_price - tp_distance
 
             stop_loss_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price > 0 else float("inf")
-            if stop_loss_pct > MAX_SANE_STOP_LOSS_PCT:
-                continue  # 同主流幣邏輯：停損距離本身已經不正常暴走，跳過這個訊號
+            if stop_loss_pct > MAX_SANE_STOP_LOSS_PCT or stop_loss_pct < MIN_SANE_STOP_LOSS_PCT:
+                continue  # 同主流幣邏輯：停損距離太寬或太窄都跳過，見 MIN/MAX_SANE_STOP_LOSS_PCT 說明
 
             leverage = calculate_leverage(stop_loss_pct)
             open_position = {

@@ -11,14 +11,17 @@ def make_ohlcv_df(
     breakout: bool = True,
     volume_spike: bool = True,
     slope: float = 0.05,
-    high_low_range: float = 0.3,
+    high_low_range: float = 0.8,
 ) -> pd.DataFrame:
     """
     產生一段穩定趨勢（線性上升或下降）的合成K線，最後一根可控制是否「帶量突破」。
     n=210 是為了超過 MA_SLOW_PERIOD(200) 的最低需求；slope 決定趨勢斜率，
     確保 MA(50) 跟 MA(200) 明確分出多空（線性序列下，近期均線一定偏向趨勢方向）。
     high_low_range 決定每根K棒的高低點寬度，調大可以模擬「ATR相對價格異常大」
-    （例如暴漲暴跌的小幣種）的情境。
+    （例如暴漲暴跌的小幣種）的情境，調小可以模擬「波動率天生就低」（例如商品錨定
+    代幣）的情境。預設值0.8是刻意選在 MIN/MAX_SANE_STOP_LOSS_PCT 兩個防呆門檻
+    之間、留足夠margin的位置（2026-07-15新增下限防呆後，原本的0.3在up/down兩個
+    方向會有一邊算出來的停損%剛好卡在門檻邊緣，改成0.8才穩定通過兩個方向）。
     """
     idx = np.arange(n, dtype=float)
     base = 100 + idx * slope if direction == "up" else 100 - idx * slope
