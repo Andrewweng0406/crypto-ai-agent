@@ -134,7 +134,7 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className="animate-chatbot-breathe fixed bottom-6 right-6 z-50 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:scale-105"
+          className="fixed bottom-6 right-6 z-50 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_0_6px] shadow-primary/15 transition-transform hover:scale-105"
           aria-label="開啟 AI 交易軍師助理"
         >
           <MessageCircle className="size-6" aria-hidden="true" />
@@ -241,9 +241,11 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
   )
 }
 
-// 💬 AI副官0-token戰況跑馬燈：橫向捲動顯示最新一則事件（迷因當沖新訊號/
+// 💬 AI副官0-token戰況通知：緩慢淡入顯示最新一則事件（迷因當沖新訊號/
 // 期權大單），點擊直接把這句話送進LLM觸發真正的深度分析（按需計費）。這裡
-// 顯示的文字本身完全不消耗API額度，是後端純字串模板組合出來的。
+// 顯示的文字本身完全不消耗API額度，是後端純字串模板組合出來的。key={item.id}
+// 讓每次換一則新事件時整個 span 重新掛載，重新觸發一次 fade-in（tw-animate-css
+// 提供的 animate-in/fade-in 工具類別），取代原本橫向捲動的跑馬燈。
 function BroadcastTicker({
   item,
   disabled,
@@ -261,11 +263,12 @@ function BroadcastTicker({
       title="點擊觸發 AI 深度分析"
       className="flex w-full items-center gap-2 overflow-hidden border-b border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-left transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
     >
-      <Radio className="size-3.5 shrink-0 animate-pulse text-amber-400" aria-hidden="true" />
-      <span className="relative flex-1 overflow-hidden whitespace-nowrap">
-        <span className="animate-broadcast-marquee inline-block font-mono text-xs font-semibold text-amber-400">
-          {item.message}
-        </span>
+      <Radio className="size-3.5 shrink-0 text-amber-400" aria-hidden="true" />
+      <span
+        key={item.id}
+        className="animate-in fade-in duration-700 flex-1 truncate font-mono text-xs font-semibold text-amber-400"
+      >
+        {item.message}
       </span>
     </button>
   )

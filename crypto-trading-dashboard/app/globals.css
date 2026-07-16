@@ -151,28 +151,6 @@
   }
 }
 
-/* 💬 AI 交易軍師助理：收合按鈕的呼吸燈效果，box-shadow 慢慢放大/縮小模擬
-   燈光呼吸，比單純的透明度 pulse 更有精緻感。 */
-@keyframes chatbot-breathe {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 oklch(0.72 0.16 154 / 45%), 0 4px 14px 0 oklch(0.72 0.16 154 / 25%);
-  }
-  50% {
-    box-shadow: 0 0 0 10px oklch(0.72 0.16 154 / 0%), 0 4px 20px 4px oklch(0.72 0.16 154 / 35%);
-  }
-}
-
-.animate-chatbot-breathe {
-  animation: chatbot-breathe 2.8s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-chatbot-breathe {
-    animation: none;
-  }
-}
-
 /* 📊 期權 GEX 分佈牆：現貨價發光線的呼吸脈衝，讓它成為圖表的視覺核心，
    跟臨界點的固定虛線做出明確區隔。只動畫暈染層的透明度，核心亮線本身
    維持全不透明、隨時清楚可讀。 */
@@ -197,24 +175,3 @@
   }
 }
 
-/* 💬 AI副官戰況跑馬燈：文字從右往左橫向捲動，經典跑馬燈效果，用在 Chatbot
-   面板頂部提醒有新的0-token事件（迷因當沖新訊號/期權大單）。 */
-@keyframes broadcast-marquee {
-  0% {
-    transform: translateX(100%);
-  }
-  100% {
-    transform: translateX(-100%);
-  }
-}
-
-.animate-broadcast-marquee {
-  animation: broadcast-marquee 14s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-broadcast-marquee {
-    animation: none;
-    transform: none;
-  }
-}
