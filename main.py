@@ -2937,14 +2937,20 @@ def compute_squeeze_tier(
 ) -> Literal["none", "blue", "yellow", "green"]:
     """
     三種燈號的判定優先順序 green > yellow > blue > none：
-      - green（三鐵律）：1h OI成長 >= 30% 且 RVOL >= 3.0 且 資金費率達極端值
-      - yellow（過熱警示）：1h OI成長 >= 30% 但 RVOL 或資金費率其中一項沒到，
+      - green（三鐵律）：1h OI成長 >= SQUEEZE_OI_GROWTH_GREEN_PCT 且 RVOL >=
+        SQUEEZE_RVOL_THRESHOLD 且 資金費率達極端值
+      - yellow（過熱警示）：1h OI成長達門檻但 RVOL 或資金費率其中一項沒到，
         代表持倉在瘋狂堆積但還沒被現貨或情緒面證實，變盤風險高但還不到三鐵律
-      - blue（短線頭皮檔）：15分鐘 OI成長 >= 15% 且價格出現突破
+      - blue（短線頭皮檔）：15分鐘 OI成長 >= SQUEEZE_OI_GROWTH_BLUE_PCT 且價格出現突破
       - none：以上皆非
 
     ⚠️ 這整套組合（OI成長+RVOL+資金費率極端值）完全沒有回測驗證過，是使用者
-    直接指定的實驗性邏輯，不是驗證過的高勝率保證。
+    直接指定的實驗性邏輯，不是驗證過的高勝率保證。2026-07-15更新：green/yellow
+    的OI/RVOL門檻已經從原本的30%/3.0大幅放寬到 SQUEEZE_OI_GROWTH_GREEN_PCT=5%／
+    SQUEEZE_RVOL_THRESHOLD=1.5（見該常數定義處），這份docstring過去仍寫著舊的
+    30%/3.0，跟實際常數不符——拿真實觸發紀錄回測forward return發現放寬後的門檻
+    predictive power很弱（甚至偏負），在決定要不要調回去之前，不要把這個燈號當
+    高勝率訊號看待。
     """
     rvol_confirmed = rvol is not None and rvol >= SQUEEZE_RVOL_THRESHOLD
     funding_extreme = funding_rate is not None and (
