@@ -78,13 +78,13 @@ export function RSI2TechnicalChart({ points, entryPrice, stopLoss }: RSI2Technic
         {stopLoss !== null && (
           <line
             x1="0" x2={width} y1={yPrice(stopLoss)} y2={yPrice(stopLoss)}
-            stroke="var(--short)" strokeWidth="1" strokeDasharray="4 4"
+            stroke="var(--chart-bear)" strokeWidth="1" strokeDasharray="4 4"
           />
         )}
         {entryPrice !== null && (
           <line
             x1="0" x2={width} y1={yPrice(entryPrice)} y2={yPrice(entryPrice)}
-            stroke="var(--long)" strokeWidth="1" strokeDasharray="4 4"
+            stroke="var(--chart-bull)" strokeWidth="1" strokeDasharray="4 4"
           />
         )}
         <polyline points={sma200Points} fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinejoin="round" />
@@ -97,9 +97,9 @@ export function RSI2TechnicalChart({ points, entryPrice, stopLoss }: RSI2Technic
         <span className="font-mono">10 / 90 參考線（&lt;10=深度超賣，進場門檻）</span>
       </div>
       <svg viewBox={`0 0 ${width} ${rsiHeight}`} className="h-20 w-full" preserveAspectRatio="none">
-        <rect x="0" y={yRsi(10)} width={width} height={Math.max(yRsi(0) - yRsi(10), 0)} fill="var(--long)" opacity="0.08" />
+        <rect x="0" y={yRsi(10)} width={width} height={Math.max(yRsi(0) - yRsi(10), 0)} fill="var(--chart-bull)" opacity="0.08" />
         <line x1="0" x2={width} y1={yRsi(90)} y2={yRsi(90)} stroke="var(--border)" strokeWidth="1" strokeDasharray="3 3" />
-        <line x1="0" x2={width} y1={yRsi(10)} y2={yRsi(10)} stroke="var(--long)" strokeWidth="1" strokeDasharray="3 3" />
+        <line x1="0" x2={width} y1={yRsi(10)} y2={yRsi(10)} stroke="var(--chart-bull)" strokeWidth="1" strokeDasharray="3 3" />
         <polyline points={rsiLine} fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
       </svg>
     </div>

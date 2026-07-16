@@ -21,7 +21,7 @@ export function PriceRangeGauge({ signal }: { signal: Signal }) {
       </div>
 
       <div className="px-1 pt-6 pb-2">
-        <div className="relative h-2.5 rounded-full bg-gradient-to-r from-short via-muted to-long">
+        <div className="relative h-2.5 rounded-full bg-gradient-to-r from-chart-bear via-muted to-chart-bull">
           {/* Current price marker */}
           <div
             className="absolute -top-1 flex -translate-x-1/2 flex-col items-center"
@@ -36,12 +36,12 @@ export function PriceRangeGauge({ signal }: { signal: Signal }) {
 
         <div className="mt-4 flex items-center justify-between">
           <div className="flex flex-col">
-            <span className="text-xs font-medium uppercase tracking-wide text-short">Stop Loss</span>
-            <span className="font-mono text-sm font-semibold text-short">${formatPrice(sl)}</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-chart-bear">Stop Loss</span>
+            <span className="font-mono text-sm font-semibold text-chart-bear">${formatPrice(sl)}</span>
           </div>
           <div className="flex flex-col text-right">
-            <span className="text-xs font-medium uppercase tracking-wide text-long">Take Profit</span>
-            <span className="font-mono text-sm font-semibold text-long">${formatPrice(tp)}</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-chart-bull">Take Profit</span>
+            <span className="font-mono text-sm font-semibold text-chart-bull">${formatPrice(tp)}</span>
           </div>
         </div>
       </div>

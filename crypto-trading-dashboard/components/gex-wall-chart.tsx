@@ -114,11 +114,11 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
           )}
         </div>
         <div className="flex items-center gap-4 text-xs">
-          <span className="flex items-center gap-1.5 text-long">
-            <span className="size-2.5 rounded-sm bg-long" aria-hidden="true" /> 正 GEX（call主導）
+          <span className="flex items-center gap-1.5 text-chart-bull">
+            <span className="size-2.5 rounded-sm bg-chart-bull" aria-hidden="true" /> 正 GEX（call主導）
           </span>
-          <span className="flex items-center gap-1.5 text-short">
-            <span className="size-2.5 rounded-sm bg-short" aria-hidden="true" /> 負 GEX（put主導）
+          <span className="flex items-center gap-1.5 text-chart-bear">
+            <span className="size-2.5 rounded-sm bg-chart-bear" aria-hidden="true" /> 負 GEX（put主導）
           </span>
         </div>
       </div>
@@ -157,9 +157,9 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
                   y={top}
                   width={barWidth(i)}
                   height={barH(p.netGex)}
-                  fill={p.netGex >= 0 ? "var(--long)" : "var(--short)"}
+                  fill={p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"}
                   opacity={isTop ? 1 : 0.78}
-                  stroke={isTop ? (p.netGex >= 0 ? "var(--long)" : "var(--short)") : "none"}
+                  stroke={isTop ? (p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)") : "none"}
                   strokeWidth={isTop ? 1.5 : 0}
                   rx="1"
                 >
@@ -175,7 +175,7 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
                       height="16"
                       rx="3"
                       fill="var(--popover)"
-                      stroke={p.netGex >= 0 ? "var(--long)" : "var(--short)"}
+                      stroke={p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"}
                       strokeWidth="1"
                     />
                     <text
@@ -185,7 +185,7 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
                       className="font-mono"
                       fontSize="11"
                       fontWeight="700"
-                      fill={p.netGex >= 0 ? "var(--long)" : "var(--short)"}
+                      fill={p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"}
                     >
                       {labelText}
                     </text>

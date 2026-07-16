@@ -81,11 +81,11 @@ export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProp
           )}
         </div>
         <div className="flex items-center gap-4 text-xs">
-          <span className="flex items-center gap-1.5 text-long">
-            <span className="h-0.5 w-4 border-t-2 border-dashed border-long" aria-hidden="true" /> TP
+          <span className="flex items-center gap-1.5 text-chart-bull">
+            <span className="h-0.5 w-4 border-t-2 border-dashed border-chart-bull" aria-hidden="true" /> TP
           </span>
-          <span className="flex items-center gap-1.5 text-short">
-            <span className="h-0.5 w-4 border-t-2 border-dashed border-short" aria-hidden="true" /> SL
+          <span className="flex items-center gap-1.5 text-chart-bear">
+            <span className="h-0.5 w-4 border-t-2 border-dashed border-chart-bear" aria-hidden="true" /> SL
           </span>
         </div>
       </div>
@@ -100,12 +100,12 @@ export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProp
         >
           <defs>
             <linearGradient id="tpFill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="var(--long)" stopOpacity="0.12" />
-              <stop offset="100%" stopColor="var(--long)" stopOpacity="0" />
+              <stop offset="0%" stopColor="var(--chart-bull)" stopOpacity="0.12" />
+              <stop offset="100%" stopColor="var(--chart-bull)" stopOpacity="0" />
             </linearGradient>
             <linearGradient id="slFill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="var(--short)" stopOpacity="0" />
-              <stop offset="100%" stopColor="var(--short)" stopOpacity="0.12" />
+              <stop offset="0%" stopColor="var(--chart-bear)" stopOpacity="0" />
+              <stop offset="100%" stopColor="var(--chart-bear)" stopOpacity="0.12" />
             </linearGradient>
           </defs>
 
@@ -130,7 +130,7 @@ export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProp
           {candles.map((c, i) => {
             const cx = i * slotW + slotW / 2
             const up = c.c >= c.o
-            const color = up ? "var(--long)" : "var(--short)"
+            const color = up ? "var(--chart-bull)" : "var(--chart-bear)"
             const bodyTop = y(Math.max(c.o, c.c))
             const bodyBottom = y(Math.min(c.o, c.c))
             const bodyH = Math.max(1, bodyBottom - bodyTop)
@@ -151,9 +151,9 @@ export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProp
           })}
 
           {/* TP line */}
-          <line x1="0" x2={width} y1={tpY} y2={tpY} stroke="var(--long)" strokeWidth="1.5" strokeDasharray="6 5" />
+          <line x1="0" x2={width} y1={tpY} y2={tpY} stroke="var(--chart-bull)" strokeWidth="1.5" strokeDasharray="6 5" />
           {/* SL line */}
-          <line x1="0" x2={width} y1={slY} y2={slY} stroke="var(--short)" strokeWidth="1.5" strokeDasharray="6 5" />
+          <line x1="0" x2={width} y1={slY} y2={slY} stroke="var(--chart-bear)" strokeWidth="1.5" strokeDasharray="6 5" />
           {/* Current price line */}
           <line
             x1="0"
@@ -197,8 +197,8 @@ function PriceTag({
     <div
       className={cn(
         "pointer-events-none absolute right-2 -translate-y-1/2 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold shadow-sm",
-        tone === "long" && "bg-long text-long-foreground",
-        tone === "short" && "bg-short text-short-foreground",
+        tone === "long" && "bg-chart-bull text-chart-bull-foreground",
+        tone === "short" && "bg-chart-bear text-chart-bear-foreground",
         tone === "neutral" && "border border-border bg-popover text-foreground",
       )}
       style={{ top: `${topPct}%` }}

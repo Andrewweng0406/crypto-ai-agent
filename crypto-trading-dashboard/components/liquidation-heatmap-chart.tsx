@@ -68,11 +68,11 @@ export function LiquidationHeatmapChart({ data }: { data: LiquidationWallData })
           <h2 className="font-mono text-base font-semibold">{data.symbol} 爆倉密度清算牆</h2>
         </div>
         <div className="flex items-center gap-4 text-xs">
-          <span className="flex items-center gap-1.5 text-long">
-            <span className="size-2.5 rounded-sm bg-long" aria-hidden="true" /> 空頭爆倉燃料區（上方阻力）
+          <span className="flex items-center gap-1.5 text-chart-bull">
+            <span className="size-2.5 rounded-sm bg-chart-bull" aria-hidden="true" /> 空頭爆倉燃料區（上方阻力）
           </span>
-          <span className="flex items-center gap-1.5 text-short">
-            <span className="size-2.5 rounded-sm bg-short" aria-hidden="true" /> 多頭強平真空區（下方支撐）
+          <span className="flex items-center gap-1.5 text-chart-bear">
+            <span className="size-2.5 rounded-sm bg-chart-bear" aria-hidden="true" /> 多頭強平真空區（下方支撐）
           </span>
         </div>
       </div>
@@ -100,7 +100,7 @@ export function LiquidationHeatmapChart({ data }: { data: LiquidationWallData })
               y={barY(p.netLiquidationUsd)}
               width={barWidth(i)}
               height={barH(p.netLiquidationUsd)}
-              fill={p.netLiquidationUsd >= 0 ? "var(--long)" : "var(--short)"}
+              fill={p.netLiquidationUsd >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"}
               opacity="0.85"
               rx="1"
             >
@@ -150,13 +150,13 @@ export function LiquidationHeatmapChart({ data }: { data: LiquidationWallData })
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1 rounded-xl border border-long/30 bg-long/[0.06] px-4 py-3">
+        <div className="flex flex-col gap-1 rounded-xl border border-chart-bull/30 bg-chart-bull/[0.06] px-4 py-3">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">空頭爆倉燃料（上方）</span>
-          <span className="font-mono text-lg font-bold text-long">{formatCompactUsd(totalShort)}</span>
+          <span className="font-mono text-lg font-bold text-chart-bull">{formatCompactUsd(totalShort)}</span>
         </div>
-        <div className="flex flex-col gap-1 rounded-xl border border-short/30 bg-short/[0.06] px-4 py-3">
+        <div className="flex flex-col gap-1 rounded-xl border border-chart-bear/30 bg-chart-bear/[0.06] px-4 py-3">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">多頭爆倉真空（下方）</span>
-          <span className="font-mono text-lg font-bold text-short">{formatCompactUsd(totalLong)}</span>
+          <span className="font-mono text-lg font-bold text-chart-bear">{formatCompactUsd(totalLong)}</span>
         </div>
       </div>
 
