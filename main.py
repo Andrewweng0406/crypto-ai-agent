@@ -255,8 +255,10 @@ SQUEEZE_OI_HISTORY_LEN = 48             # 48筆 x 5分鐘 = 4小時歷史
 SQUEEZE_OI_LOOKBACK_15M_SAMPLES = 3     # 15分鐘 / 5分鐘一筆 = 回看3筆前
 SQUEEZE_OI_LOOKBACK_1H_SAMPLES = 12     # 1小時 / 5分鐘一筆 = 回看12筆前
 SQUEEZE_OI_GROWTH_BLUE_PCT = 15.0       # 藍燈（短線頭皮檔）：15分鐘OI成長門檻（維持不變，使用者只指定了1H門檻）
-SQUEEZE_OI_GROWTH_GREEN_PCT = 5.0       # 綠燈/黃燈：1小時OI成長門檻（原30.0，使用者新指定5.0）
-SQUEEZE_RVOL_THRESHOLD = 1.5            # 綠燈現貨共振門檻（原3.0，使用者新指定1.5）
+SQUEEZE_OI_GROWTH_GREEN_PCT = 30.0      # 綠燈/黃燈：1小時OI成長門檻（2026-07-15調回原始值——曾放寬到5.0，
+                                         # 但拿真實觸發紀錄回測forward return後發現放寬後predictive power
+                                         # 很弱甚至偏負，見 compute_squeeze_tier 說明）
+SQUEEZE_RVOL_THRESHOLD = 3.0            # 綠燈現貨共振門檻（同上，2026-07-15調回原始值）
 SQUEEZE_TIMEFRAME = "15m"               # 算RVOL/價格突破用的K線週期
 SQUEEZE_VOLUME_LOOKBACK = 20            # RVOL基準週期（不含當根）
 SQUEEZE_BREAKOUT_LOOKBACK = 20          # 判斷「價格突破」用的回看K棒數（不含當根）
@@ -2945,12 +2947,12 @@ def compute_squeeze_tier(
       - none：以上皆非
 
     ⚠️ 這整套組合（OI成長+RVOL+資金費率極端值）完全沒有回測驗證過，是使用者
-    直接指定的實驗性邏輯，不是驗證過的高勝率保證。2026-07-15更新：green/yellow
-    的OI/RVOL門檻已經從原本的30%/3.0大幅放寬到 SQUEEZE_OI_GROWTH_GREEN_PCT=5%／
-    SQUEEZE_RVOL_THRESHOLD=1.5（見該常數定義處），這份docstring過去仍寫著舊的
-    30%/3.0，跟實際常數不符——拿真實觸發紀錄回測forward return發現放寬後的門檻
-    predictive power很弱（甚至偏負），在決定要不要調回去之前，不要把這個燈號當
-    高勝率訊號看待。
+    直接指定的實驗性邏輯，不是驗證過的高勝率保證。2026-07-15：green/yellow的
+    OI/RVOL門檻曾一度放寬到5%/1.5，但拿真實觸發紀錄回測forward return後發現
+    predictive power很弱（甚至偏負，SXT連續4次觸發在+4h/+24h全部負報酬），已經
+    調回原始的30%/3.0（見 SQUEEZE_OI_GROWTH_GREEN_PCT／SQUEEZE_RVOL_THRESHOLD
+    定義處）——調回去之後綠燈會變得很稀有，這是刻意的，「三鐵律」本來就該是
+    稀有的極端事件，不是常態訊號。
     """
     rvol_confirmed = rvol is not None and rvol >= SQUEEZE_RVOL_THRESHOLD
     funding_extreme = funding_rate is not None and (
