@@ -1,4 +1,3 @@
-import { AlertTriangle } from "lucide-react"
 import { type LiquidationWallData, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
 
 const AXIS_TICK_COUNT = 6
@@ -161,7 +160,6 @@ export function LiquidationHeatmapChart({ data }: { data: LiquidationWallData })
       </div>
 
       <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
         資料是本機監聽開始運作後才累積的真實強平單，不是回推未平倉部位的理論清算價位——累積時間越長，密度圖越有參考價值。
         {data.updatedAt && ` 更新於 ${formatTime(data.updatedAt)}。`}
       </p>

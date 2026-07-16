@@ -1,6 +1,6 @@
 "use client"
 
-import { AlertTriangle, Star, type LucideIcon } from "lucide-react"
+import { Star, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type OptionsGexData, type USStockSignalState, type WhaleSweepItem, formatPrice } from "@/lib/signals"
 import { calculateMarketTrend } from "@/lib/confluence"
@@ -97,7 +97,6 @@ export function FavoritesOverview({
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">📊 期權分析</h3>
           {optionsError && (
             <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               無法載入期權分析資料：{optionsError}
             </div>
           )}
@@ -131,7 +130,6 @@ export function FavoritesOverview({
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">美股 ORB</h3>
           {usStocksError && (
             <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               無法載入美股 ORB 資料：{usStocksError}
             </div>
           )}

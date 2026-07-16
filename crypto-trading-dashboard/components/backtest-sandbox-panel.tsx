@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { AlertTriangle, Rocket, RefreshCw } from "lucide-react"
+import { Rocket, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   adaptBacktestResult,
@@ -315,7 +315,6 @@ export function BacktestSandboxPanel() {
 
       {error && (
         <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           {error}
         </div>
       )}
@@ -349,7 +348,6 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
     <div className="flex flex-col gap-4">
       {!result.sampleSufficient && (
         <div className="flex items-start gap-1.5 rounded-lg border border-short/30 bg-short/[0.06] px-3 py-2 text-xs text-short">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           樣本數僅 {result.totalTrades} 筆（門檻15筆），這組數字統計上不具意義，不能拿來下結論。
         </div>
       )}
@@ -361,7 +359,6 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
       )}
       {result.strategyCaveat && (
         <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           {result.strategyCaveat}
         </div>
       )}
@@ -391,7 +388,6 @@ function WalkForwardResultView({ result }: { result: WalkForwardResult }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
         {result.caveat}
       </div>
 
@@ -463,7 +459,6 @@ function StockWalkForwardResultView({ result }: { result: StockWalkForwardResult
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
         {result.caveat}
       </div>
 

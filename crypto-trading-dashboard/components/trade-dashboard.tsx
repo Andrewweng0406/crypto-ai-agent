@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
 import {
   Activity,
-  AlertTriangle,
   CandlestickChart,
   Coins,
   Flame,
@@ -871,7 +870,6 @@ export function TradeDashboard() {
       )}
 
       <footer className="mt-2 flex items-start gap-2 rounded-xl border border-border/60 bg-card/60 p-4 text-xs leading-relaxed text-muted-foreground">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         <p>
           本網站顯示的訊號由自動化演算法產生，<strong className="text-foreground">僅供研究與參考，不構成任何投資建議</strong>
           ，策略本身仍在驗證階段、過去（含回測）表現不代表未來結果。加密貨幣槓桿交易風險極高，可能導致本金全部損失，請自行判斷風險並對自己的交易決策負責。

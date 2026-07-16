@@ -1,4 +1,3 @@
-import { AlertTriangle } from "lucide-react"
 import { type OptionsGexData, type OptionsGexPoint, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
 
 // 主戰區縮放範圍：現價前後 ±15%。這個組件套用在期權分析頁全部5檔標的
@@ -243,14 +242,12 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
 
       {gammaFlipStrike === null && (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           此履約價區間內，累積 Net GEX 沒有出現正負轉折，目前抓不到明確的 Gamma 擠壓臨界點。
         </p>
       )}
 
       {flipOutOfRange && (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           Gamma 臨界點距離現價超過 {Math.round(ZOOM_PCT * 100)}%，已移出主戰區顯示範圍，改用邊緣箭頭標示方向。
         </p>
       )}

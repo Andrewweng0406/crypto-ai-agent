@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import useSWR from "swr"
-import { AlertTriangle, Target } from "lucide-react"
+import { Target } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   adaptRSI2Chart,
@@ -79,7 +79,6 @@ export function HighWinRatePanel() {
 
       {listData && (
         <div className="flex items-start gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           {listData.caveat}
         </div>
       )}
