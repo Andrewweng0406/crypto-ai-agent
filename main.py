@@ -901,7 +901,7 @@ class AssistantBroadcastItem(BaseModel):
     id: str
     message: str
     symbol: str
-    kind: Literal["meme_trade", "whale_sweep", "squeeze_mode", "rsi2_meanrev"]
+    kind: Literal["meme_trade", "whale_sweep", "squeeze_mode", "rsi2_meanrev", "gex_flip_cross"]
     triggered_at: str
 
 
@@ -1037,6 +1037,11 @@ class OptionsState:
         # 避免同一天內重複刷新時誤把「今天稍早」當成「昨天」。
         self.previous_day_gex_points: List[dict] = []
         self.last_snapshot_date: Optional[str] = None
+        # 2026-07-16新增：現貨價相對Gamma臨界點的位置（True=站上、False=跌破），
+        # 用邊緣觸發偵測「黃金交叉/死亡交叉」並推播——None代表還沒有基準可比較
+        # （剛啟動、或這輪gamma_flip_strike算不出來），這種情況不算穿越、也不
+        # 更新這個欄位，避免拿一次不完整的資料誤判成假的交叉事件。
+        self.was_above_flip: Optional[bool] = None
         # GEX剖面本身資料源(yfinance)沒有逐筆成交數據，大單即時流改由使用者本機執行
         # 的 moomoo_whale_sweep_local.py 主動回傳（見 POST /api/us/whale-sweep）——
         # 這是否支援純粹取決於代號在不在 MOOMOO_WHALE_SWEEP_TICKERS 這份固定集合裡
@@ -2400,7 +2405,7 @@ def build_meme_trade_open_signal(display_name: str, ticker_symbol: str, side: st
     }
 
 
-async def push_assistant_broadcast(message: str, symbol: str, kind: Literal["meme_trade", "whale_sweep", "squeeze_mode", "rsi2_meanrev"]) -> None:
+async def push_assistant_broadcast(message: str, symbol: str, kind: Literal["meme_trade", "whale_sweep", "squeeze_mode", "rsi2_meanrev", "gex_flip_cross"]) -> None:
     """
     AI副官0-token戰況跑馬燈：純字串模板組合（呼叫端已經把數字準備好，這裡只是
     appendleft），完全不呼叫LLM，不消耗任何API額度。跟 news_agent 的LLM情緒
@@ -3199,6 +3204,7 @@ async def scan_options_analytics() -> None:
     """對每個 OPTIONS_UNDERLYINGS 標的：拉最近到期日的完整期權鏈 + 現貨價，交給 gex_engine 算 Net GEX 剖面跟 Gamma 擠壓臨界點。"""
     now_iso = datetime.now(timezone.utc).isoformat()
     any_success = False
+    flip_cross_notifications: List[dict] = []
 
     for display_name, ticker_symbol in dict(state.options_watchlist).items():
         try:
@@ -3253,6 +3259,25 @@ async def scan_options_analytics() -> None:
                 opt_state.gex_points = gex_points
                 opt_state.gamma_flip_strike = gamma_flip
                 opt_state.last_updated = now_iso
+
+                # 關鍵點位警報：現貨價穿越Gamma臨界點（黃金交叉=由負轉正Gamma區、
+                # 死亡交叉=由正轉負Gamma區）。was_above_flip is None代表還沒有基準
+                # 可比較（剛啟動、或這輪/上輪算不出臨界點），這種情況不算穿越，只
+                # 建立基準，避免拿不完整的資料誤判出假的交叉事件。
+                is_above_flip = spot > gamma_flip if gamma_flip is not None else None
+                if is_above_flip is not None:
+                    if opt_state.was_above_flip is not None and is_above_flip != opt_state.was_above_flip:
+                        cross_label = "🟢 黃金交叉（進入正Gamma區）" if is_above_flip else "🔴 死亡交叉（跌入負Gamma區）"
+                        broadcast_verb = "站上" if is_above_flip else "跌破"
+                        flip_cross_notifications.append({
+                            "symbol": display_name,
+                            "telegram": (
+                                f"⚡ <b>Gamma 臨界點穿越</b>\n{display_name} {cross_label}\n"
+                                f"現價 ${spot:.2f} · 臨界點 ${gamma_flip:.2f}"
+                            ),
+                            "broadcast": f"⚡ {display_name} 現價 ${spot:.2f} {broadcast_verb} Gamma臨界點 ${gamma_flip:.2f}，{cross_label}",
+                        })
+                    opt_state.was_above_flip = is_above_flip
             any_success = True
         except Exception as exc:  # noqa: BLE001 - 單一標的失敗不該讓其他標的也算不出來
             logger.warning("計算 %s GEX 剖面失敗：%s", display_name, exc)
@@ -3260,6 +3285,11 @@ async def scan_options_analytics() -> None:
     async with state.lock:
         state.last_options_scan_at = time.monotonic()
         state.options_data_source_ok = any_success
+
+    # 推播放在鎖外面，理由同 run_tick：不要讓 Telegram 網路請求卡住其他正在等鎖的請求。
+    for notification in flip_cross_notifications:
+        await send_telegram_message(notification["telegram"])
+        await push_assistant_broadcast(notification["broadcast"], notification["symbol"], "gex_flip_cross")
 
     if not any_success:
         raise RuntimeError("本輪所有標的的 GEX 剖面都計算失敗")
@@ -3910,6 +3940,7 @@ def save_state_snapshot() -> None:
                     "gamma_flip_strike": o.gamma_flip_strike,
                     "previous_day_gex_points": o.previous_day_gex_points,
                     "last_snapshot_date": o.last_snapshot_date,
+                    "was_above_flip": o.was_above_flip,
                     # whale_sweep_supported 不是 OptionsState 的欄位，見該類別定義處說明：
                     # 現在是即時用 MOOMOO_WHALE_SWEEP_TICKERS 常數算的，沒有狀態要存。
                 }
@@ -4046,6 +4077,7 @@ def load_state_snapshot() -> None:
             opt_state.gamma_flip_strike = data.get("gamma_flip_strike")
             opt_state.previous_day_gex_points = data.get("previous_day_gex_points", [])
             opt_state.last_snapshot_date = data.get("last_snapshot_date")
+            opt_state.was_above_flip = data.get("was_above_flip")
 
         state.whale_sweep_feed.extend(snapshot.get("whale_sweep_feed", []))
 

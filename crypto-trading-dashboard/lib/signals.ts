@@ -935,7 +935,7 @@ export function adaptMemeTradeHistory(raw: BackendMemeTradeHistoryResponse): {
 // 迷因當沖新訊號跟期權大單。點擊跑馬燈才會把訊息送進 /api/chat 真的觸發LLM。
 // ---------------------------------------------------------------------------
 
-export type AssistantBroadcastKind = "meme_trade" | "whale_sweep" | "squeeze_mode" | "rsi2_meanrev"
+export type AssistantBroadcastKind = "meme_trade" | "whale_sweep" | "squeeze_mode" | "rsi2_meanrev" | "gex_flip_cross"
 
 export interface BackendAssistantBroadcastItem {
   id: string
