@@ -666,6 +666,7 @@ class OptionsGexResponse(BaseModel):
     expiry: Optional[str] = None
     gamma_flip_strike: Optional[float] = None  # ⚡ Gamma 擠壓臨界點；None代表這份剖面內沒有偵測到正負轉折
     points: List[OptionsGexPoint] = []
+    previous_day_points: List[OptionsGexPoint] = []  # 昨天收盤前最後一份快照，供前端疊圖顯示「今天新增vs昨天既有」；累積不足一天時是空陣列
     whale_sweep_supported: Optional[bool] = None  # 大單即時流來自本機 Moomoo 橋接，只涵蓋 MOOMOO_WHALE_SWEEP_TICKERS 固定集合內的代號
     updated_at: Optional[str] = None
 
@@ -1027,6 +1028,14 @@ class OptionsState:
         self.expiry: Optional[str] = None
         self.gex_points: List[dict] = []  # [{"strike","call_gex","put_gex","net_gex"}, ...]，依履約價由小到大排序
         self.gamma_flip_strike: Optional[float] = None
+        # 2026-07-16新增：昨天收盤前最後一次抓到的GEX剖面快照，供前端疊圖顯示
+        # 「今天新增 vs 昨天既有」（OI本身是每日盤前才更新一次的靜態快照，同一個
+        #交易日內反覆抓不會變，所以「今天有沒有新錢築牆」的比較基準本來就該是
+        # 「跟昨天最後一份快照比」，不是跟幾分鐘前比）。last_snapshot_date記錄
+        # 這份快照是哪個美東日期，換日時才把當時的 gex_points 捲存進這裡，
+        # 避免同一天內重複刷新時誤把「今天稍早」當成「昨天」。
+        self.previous_day_gex_points: List[dict] = []
+        self.last_snapshot_date: Optional[str] = None
         # GEX剖面本身資料源(yfinance)沒有逐筆成交數據，大單即時流改由使用者本機執行
         # 的 moomoo_whale_sweep_local.py 主動回傳（見 POST /api/us/whale-sweep）——
         # 這是否支援純粹取決於代號在不在 MOOMOO_WHALE_SWEEP_TICKERS 這份固定集合裡
@@ -3194,9 +3203,18 @@ async def scan_options_analytics() -> None:
                 risk_free_rate=OPTIONS_RISK_FREE_RATE,
             )
             gamma_flip = gex_engine.find_gamma_flip_point(gex_points)
+            today_et = datetime.now(ZoneInfo(US_MARKET_TZ)).date().isoformat()
 
             async with state.lock:
                 opt_state = state.get_options_state(display_name)
+                # 換日快照：OI本身每天盤前才更新一次、同一天內反覆抓都不會變，所以
+                # 「今天新增 vs 昨天既有」的比較基準是「換日時把當時最後一份 gex_points
+                # 捲存起來」，不是每次刷新都比對——避免同一天內把「10分鐘前」誤判成
+                # 「昨天」。第一次啟動（last_snapshot_date is None）或剛好沒有舊資料
+                # 時不捲存，避免用空資料覆蓋掉還沒建立過的 previous_day_gex_points。
+                if opt_state.last_snapshot_date is not None and opt_state.last_snapshot_date != today_et and opt_state.gex_points:
+                    opt_state.previous_day_gex_points = opt_state.gex_points
+                opt_state.last_snapshot_date = today_et
                 opt_state.has_data = True
                 opt_state.spot_price = spot
                 opt_state.expiry = expiry
@@ -3858,6 +3876,8 @@ def save_state_snapshot() -> None:
                     "expiry": o.expiry,
                     "gex_points": o.gex_points,
                     "gamma_flip_strike": o.gamma_flip_strike,
+                    "previous_day_gex_points": o.previous_day_gex_points,
+                    "last_snapshot_date": o.last_snapshot_date,
                     # whale_sweep_supported 不是 OptionsState 的欄位，見該類別定義處說明：
                     # 現在是即時用 MOOMOO_WHALE_SWEEP_TICKERS 常數算的，沒有狀態要存。
                 }
@@ -3992,6 +4012,8 @@ def load_state_snapshot() -> None:
             opt_state.expiry = data.get("expiry")
             opt_state.gex_points = data.get("gex_points", [])
             opt_state.gamma_flip_strike = data.get("gamma_flip_strike")
+            opt_state.previous_day_gex_points = data.get("previous_day_gex_points", [])
+            opt_state.last_snapshot_date = data.get("last_snapshot_date")
 
         state.whale_sweep_feed.extend(snapshot.get("whale_sweep_feed", []))
 
@@ -5174,6 +5196,7 @@ async def get_options_gex() -> OptionsGexListResponse:
                 expiry=opt_state.expiry,
                 gamma_flip_strike=opt_state.gamma_flip_strike,
                 points=[OptionsGexPoint(**p) for p in opt_state.gex_points],
+                previous_day_points=[OptionsGexPoint(**p) for p in opt_state.previous_day_gex_points],
                 whale_sweep_supported=display_name in MOOMOO_WHALE_SWEEP_TICKERS,
                 updated_at=opt_state.last_updated,
             ))

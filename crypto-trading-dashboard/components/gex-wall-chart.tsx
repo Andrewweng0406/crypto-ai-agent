@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react"
 import { ChevronLeft, ChevronRight, Crosshair } from "lucide-react"
-import { type OptionsGexData, type OptionsGexPoint, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
+import { type OptionsGexData, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
 
 // 2026-07-16修復：原本X軸鎖死在現價前後±15%、看不到範圍外的履約價，只能靠邊緣
 // 箭頭「知道」還有更遠的臨界點，卻沒辦法真的滑過去看。現在整條履約價都畫進同一張
@@ -82,6 +82,13 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
   const netGexTotalPerDollar = points.reduce((sum, p) => sum + p.netGex, 0)
   const netGexTotalPer1Pct = netGexTotalPerDollar * spotPrice * 0.01
 
+  // 2026-07-16新增：今天新增 vs 昨天既有——OI是每日盤前才更新一次的靜態快照，
+  // 「今天有沒有新錢在這個履約價築牆」的比較基準本來就該是「跟昨天收盤前最後
+  // 一份快照比」。累積不足一天（previousDayPoints是空陣列）時完全不畫疊色，
+  // 退回單色顯示，避免第一次上線就顯示一條看起來像「全部都是新的」的假訊號。
+  const hasPreviousDay = data.previousDayPoints.length > 0
+  const previousDayByStrike = new Map(data.previousDayPoints.map((p) => [p.strike, p.netGex]))
+
   const scrollToCenter = (centerX: number) => {
     const el = scrollRef.current
     if (!el) return
@@ -135,6 +142,11 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
             <span className="flex items-center gap-1.5 text-chart-bear">
               <span className="size-2.5 rounded-sm bg-chart-bear" aria-hidden="true" /> 負 GEX（put主導）
             </span>
+            {hasPreviousDay && (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="size-2.5 rounded-sm bg-foreground/70" aria-hidden="true" /> 亮色＝今天新增
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -179,31 +191,63 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
             {/* 零線 */}
             <line x1="0" x2={svgWidth} y1={yZero} y2={yZero} stroke="var(--border)" strokeWidth="1" />
 
-            {/* GEX 柱狀 */}
+            {/* GEX 柱狀：有昨天快照可比對時，拆成「昨天既有」（暗）+「今天新增」（亮）
+               兩截疊圖；方向翻轉或今天反而縮小時無法乾淨地拆解新舊，退回單色畫法。 */}
             {points.map((p, i) => {
               const isTop = topGexStrikes.has(p.strike)
-              const top = barY(p.netGex)
-              const bottom = top + barH(p.netGex)
               const cx = x(p.strike)
-              const labelY = p.netGex >= 0 ? Math.max(top - 8, padTop - 12) : Math.min(bottom + 16, height - padBottom - 4)
+              const bw = barWidth(i)
+              const color = p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"
               const labelText = `$${formatPrice(p.strike)}`
               const labelBoxWidth = labelText.length * 6.6 + 10
 
+              const prevNetGex = previousDayByStrike.get(p.strike) ?? 0
+              const sameSign = prevNetGex !== 0 && Math.sign(prevNetGex) === Math.sign(p.netGex)
+              const carriedNetGex = hasPreviousDay ? (sameSign ? prevNetGex : 0) : p.netGex
+              const newNetGex = hasPreviousDay ? p.netGex - carriedNetGex : 0
+
+              const top = barY(p.netGex)
+              const bottom = top + barH(p.netGex)
+              const carriedTop = barY(carriedNetGex)
+              const carriedBottom = carriedTop + barH(carriedNetGex)
+              const labelY = p.netGex >= 0 ? Math.max(top - 8, padTop - 12) : Math.min(bottom + 16, height - padBottom - 4)
+
               return (
                 <g key={p.strike}>
+                  {/* 昨天既有（或没有可比對資料時的今天全額）：較暗 */}
                   <rect
-                    x={cx - barWidth(i) / 2}
-                    y={top}
-                    width={barWidth(i)}
-                    height={barH(p.netGex)}
-                    fill={p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)"}
-                    opacity={isTop ? 1 : 0.78}
-                    stroke={isTop ? (p.netGex >= 0 ? "var(--chart-bull)" : "var(--chart-bear)") : "none"}
+                    x={cx - bw / 2}
+                    y={carriedTop}
+                    width={bw}
+                    height={barH(carriedNetGex)}
+                    fill={color}
+                    opacity={isTop ? 0.85 : 0.55}
+                    stroke={isTop ? color : "none"}
                     strokeWidth={isTop ? 1.5 : 0}
                     rx="1"
                   >
-                    <title>{`Strike $${formatPrice(p.strike)} · Net GEX ${formatCompactUsd(p.netGex)}`}</title>
+                    <title>
+                      {hasPreviousDay
+                        ? `Strike $${formatPrice(p.strike)} · 昨天既有 ${formatCompactUsd(carriedNetGex)}`
+                        : `Strike $${formatPrice(p.strike)} · Net GEX ${formatCompactUsd(p.netGex)}`}
+                    </title>
                   </rect>
+                  {/* 今天新增：疊在既有部位外側，全不透明、比較亮，一眼看出今天哪裡在築新牆 */}
+                  {newNetGex !== 0 && (
+                    <rect
+                      x={cx - bw / 2}
+                      y={p.netGex >= 0 ? top : carriedBottom}
+                      width={bw}
+                      height={barH(newNetGex)}
+                      fill={color}
+                      opacity={1}
+                      stroke={color}
+                      strokeWidth="1"
+                      rx="1"
+                    >
+                      <title>{`Strike $${formatPrice(p.strike)} · 今天新增 ${formatCompactUsd(newNetGex)}`}</title>
+                    </rect>
+                  )}
 
                   {isTop && (
                     <g>
@@ -283,6 +327,12 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
       {gammaFlipStrike === null && (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
           此履約價區間內，累積 Net GEX 沒有出現正負轉折，目前抓不到明確的 Gamma 擠壓臨界點。
+        </p>
+      )}
+
+      {!hasPreviousDay && (
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          尚未累積滿一個交易日的資料，還無法比較「今天新增 vs 昨天既有」——明天開盤後會開始顯示。
         </p>
       )}
 

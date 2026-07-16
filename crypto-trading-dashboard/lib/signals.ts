@@ -705,6 +705,7 @@ export interface BackendOptionsGexResponse {
   expiry: string | null
   gamma_flip_strike: number | null
   points: BackendOptionsGexPoint[]
+  previous_day_points: BackendOptionsGexPoint[]
   whale_sweep_supported: boolean | null
   updated_at: string | null
 }
@@ -730,6 +731,7 @@ export interface OptionsGexData {
   expiry: string | null
   gammaFlipStrike: number | null
   points: OptionsGexPoint[]
+  previousDayPoints: OptionsGexPoint[]
   whaleSweepSupported: boolean | null
   updatedAt: string | null
 }
@@ -747,6 +749,9 @@ export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
       expiry: u.expiry,
       gammaFlipStrike: u.gamma_flip_strike,
       points: u.points.map((p) => ({ strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex })),
+      previousDayPoints: u.previous_day_points.map((p) => ({
+        strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex,
+      })),
       whaleSweepSupported: u.whale_sweep_supported,
       updatedAt: u.updated_at,
     })),
