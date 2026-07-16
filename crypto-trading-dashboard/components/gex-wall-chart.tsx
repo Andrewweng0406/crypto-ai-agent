@@ -75,6 +75,13 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
   const spotX = x(spotPrice)
   const flipX = gammaFlipStrike !== null ? x(gammaFlipStrike) : null
 
+  // Net GEX 總量：後端算的 net_gex 是「標的每漲跌$1」的美元Gamma曝險（見
+  // gex_engine.py docstring），换成「每1%波動」是業界慣例的呈現方式，
+  // 乘上 spotPrice*0.01（1%的現價換算成美元）即可，不需要额外資料源。
+  // 正值＝做市商淨多Gamma、避險行為傾向壓抑波動；負值＝淨空Gamma、傾向放大波動。
+  const netGexTotalPerDollar = points.reduce((sum, p) => sum + p.netGex, 0)
+  const netGexTotalPer1Pct = netGexTotalPerDollar * spotPrice * 0.01
+
   const scrollToCenter = (centerX: number) => {
     const el = scrollRef.current
     if (!el) return
@@ -130,6 +137,23 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
             </span>
           </div>
         </div>
+      </div>
+
+      <div
+        className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${
+          netGexTotalPer1Pct >= 0 ? "border-chart-bull/30 bg-chart-bull/[0.07]" : "border-chart-bear/30 bg-chart-bear/[0.07]"
+        }`}
+      >
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Net GEX 總量</span>
+        <span
+          className={`font-mono text-lg font-bold ${netGexTotalPer1Pct >= 0 ? "text-chart-bull" : "text-chart-bear"}`}
+        >
+          {formatCompactUsd(netGexTotalPer1Pct)}
+        </span>
+        <span className="text-xs text-muted-foreground">/ 每1%波動</span>
+        <span className="ml-auto text-xs text-muted-foreground">
+          {netGexTotalPer1Pct >= 0 ? "做市商淨多Gamma，避險行為傾向壓抑波動" : "做市商淨空Gamma，避險行為傾向放大波動"}
+        </span>
       </div>
 
       <div className="relative">

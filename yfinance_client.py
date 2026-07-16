@@ -38,6 +38,15 @@ logger = logging.getLogger("trading_signal")
 # 0DTE 極端 IV 是同一件事。
 IV_SANE_MAX = 5.0
 
+# 2026-07-16新增：跟上面對稱的下限。真實發生過的案例：NVDA最近到期日（僅1天
+# 到期）某幾檔近價履約價，yfinance回傳的impliedVolatility是0.00001~0.0003這種
+# 近乎零的假數值（同一時間openInterest也顯示0，明顯是Yahoo對這種即將到期、
+# 交易清淡的合約給的佔位/失真資料，不是真實報價——VIX史上收盤從沒低於9%，
+# 個股IV比指數更不可能低到這個量級）。Black-Scholes gamma公式裡IV在分母，
+# 這種近零IV會讓gamma被放大到失真等級（實測：單一履約價的美元Gamma曝險被
+# 撐到$300億以上，超過NVDA全市場合理範圍），汙染整條GEX曲線跟Net GEX總量。
+IV_SANE_MIN = 0.05
+
 
 @dataclass
 class OptionLegRaw:
@@ -100,7 +109,7 @@ async def get_option_chain_legs(ticker_symbol: str, expiry: str) -> list[OptionL
 
     legs_by_strike: dict[float, OptionLegRaw] = {}
 
-    def _clean(value, *, sane_max: Optional[float] = None) -> float:
+    def _clean(value, *, sane_max: Optional[float] = None, sane_min: Optional[float] = None) -> float:
         # pandas 回傳缺值是 NaN（浮點數），不是 None，`x or 0.0` 這種寫法接不住
         # NaN（NaN 在 Python 是 truthy），一定要用 isnan 明確檢查，否則 NaN 會
         # 一路帶進 gex_engine 的乘法運算、汙染整條 GEX 曲線，最後連 FastAPI
@@ -113,6 +122,11 @@ async def get_option_chain_legs(ticker_symbol: str, expiry: str) -> list[OptionL
             return 0.0
         if sane_max is not None and f > sane_max:
             return 0.0
+        # 回傳0.0（不是保留原始過小值）是刻意的：black_scholes_gamma() 的
+        # safe mask 用 iv > 0 判斷要不要算這條腿的gamma，0.0 會讓這條腿被
+        # 直接排除在GEX計算外，跟 sane_max 那支已經在用的慣例一致。
+        if sane_min is not None and 0 < f < sane_min:
+            return 0.0
         return f
 
     def _apply(rows, is_call: bool) -> None:
@@ -123,7 +137,7 @@ async def get_option_chain_legs(ticker_symbol: str, expiry: str) -> list[OptionL
                 OptionLegRaw(strike=strike, call_oi=0.0, call_iv=0.0, put_oi=0.0, put_iv=0.0),
             )
             oi = _clean(row.get("openInterest"))
-            iv = _clean(row.get("impliedVolatility"), sane_max=IV_SANE_MAX)
+            iv = _clean(row.get("impliedVolatility"), sane_max=IV_SANE_MAX, sane_min=IV_SANE_MIN)
             if is_call:
                 leg.call_oi = oi
                 leg.call_iv = iv
