@@ -768,6 +768,7 @@ export interface BackendWhaleSweepItem {
   side: "buy" | "sell" | null
   premium_usd: number
   triggered_at: string
+  delta: number | null
 }
 
 export interface BackendWhaleSweepResponse {
@@ -783,6 +784,7 @@ export interface WhaleSweepItem {
   side: "buy" | "sell" | null
   premiumUsd: number
   triggeredAt: string
+  delta: number | null
 }
 
 export function adaptWhaleSweep(raw: BackendWhaleSweepResponse): WhaleSweepItem[] {
@@ -794,6 +796,7 @@ export function adaptWhaleSweep(raw: BackendWhaleSweepResponse): WhaleSweepItem[
     side: item.side,
     premiumUsd: item.premium_usd,
     triggeredAt: item.triggered_at,
+    delta: item.delta,
   }))
 }
 

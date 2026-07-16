@@ -686,6 +686,7 @@ class WhaleSweepItem(BaseModel):
     side: Optional[Literal["buy", "sell"]] = None  # 本機端有時判斷不出方向（"方向不明"），前端需處理 None
     premium_usd: float
     triggered_at: str
+    delta: Optional[float] = None  # 伺服器端事後估算（見 _estimate_whale_sweep_delta），估不出來時是None，不是0
 
 
 class WhaleSweepResponse(BaseModel):
@@ -3163,6 +3164,37 @@ def _time_to_expiry_years(expiry: str) -> float:
     return max(days, 0.5) / 365
 
 
+def _estimate_whale_sweep_delta(symbol: str, strike: float, expiry: str, option_type: Literal["call", "put"]) -> Optional[float]:
+    """
+    用這檔標的「最近一次GEX剖面重算」帶出來的同一個履約價IV（見
+    compute_net_gex_by_strike 回傳的 call_iv/put_iv）估算這筆大單的delta——
+    不是這筆交易當下即時算的隱含波動率，whale sweep tick資料本身沒有IV，
+    只能近似用同一檔標的最近一輪（≤60秒前）抓到的期權鏈去估，跟大單實際發生
+    的時間點通常只差幾秒到幾分鐘，這個誤差可以接受。找不到現貨價、這個履約價
+    不在目前追蹤的GEX剖面窗口內（見OPTIONS_STRIKE_WINDOW_PCT）、或算出來是NaN
+    （時間價值/波動率不合理），一律回傳None——前端該顯示「無法估算」，不該
+    顯示一個可能誤導的假數字。呼叫端須持有 state.lock。
+    """
+    opt_state = state.options_states.get(symbol)
+    if opt_state is None or opt_state.spot_price is None:
+        return None
+    point = next((p for p in opt_state.gex_points if p["strike"] == strike), None)
+    if point is None:
+        return None
+    iv = point.get("call_iv") if option_type == "call" else point.get("put_iv")
+    if not iv or iv <= 0:
+        return None
+    try:
+        time_to_expiry = _time_to_expiry_years(expiry)
+    except ValueError:
+        return None
+    delta = gex_engine.black_scholes_delta(
+        spot=opt_state.spot_price, strike=strike, time_to_expiry_years=time_to_expiry,
+        iv=iv, option_type=option_type, risk_free_rate=OPTIONS_RISK_FREE_RATE,
+    )
+    return None if math.isnan(delta) else round(float(delta), 4)
+
+
 async def scan_options_analytics() -> None:
     """對每個 OPTIONS_UNDERLYINGS 標的：拉最近到期日的完整期權鏈 + 現貨價，交給 gex_engine 算 Net GEX 剖面跟 Gamma 擠壓臨界點。"""
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -5347,6 +5379,7 @@ async def ingest_whale_sweep(
     async with state.lock:
         is_duplicate = _is_duplicate_whale_sweep(record, state.whale_sweep_feed)
         if not is_duplicate:
+            record["delta"] = _estimate_whale_sweep_delta(item.symbol, item.strike, item.expiry, item.option_type)
             state.whale_sweep_feed.appendleft(record)
         state.moomoo_last_seen_monotonic = time.monotonic()
         moomoo_online = state.moomoo_online

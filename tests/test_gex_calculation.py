@@ -16,6 +16,7 @@ from scipy.stats import norm
 
 from gex_engine import (
     OptionLeg,
+    black_scholes_delta,
     black_scholes_gamma,
     compute_net_gex_by_strike,
     find_gamma_flip_point,
@@ -26,6 +27,13 @@ def reference_gamma(spot, strike, t, iv, r=0.045):
     """Textbook Black-Scholes gamma, computed independently of gex_engine."""
     d1 = (np.log(spot / strike) + (r + 0.5 * iv**2) * t) / (iv * np.sqrt(t))
     return norm.pdf(d1) / (spot * iv * np.sqrt(t))
+
+
+def reference_delta(spot, strike, t, iv, option_type, r=0.045):
+    """Textbook Black-Scholes delta, computed independently of gex_engine."""
+    d1 = (np.log(spot / strike) + (r + 0.5 * iv**2) * t) / (iv * np.sqrt(t))
+    call_delta = norm.cdf(d1)
+    return call_delta if option_type == "call" else call_delta - 1.0
 
 
 class TestBlackScholesGamma:
@@ -69,6 +77,59 @@ class TestBlackScholesGamma:
         scalar = np.array([
             black_scholes_gamma(spot=100.0, strike=k, time_to_expiry_years=0.2, iv=v)
             for k, v in zip(strikes, ivs)
+        ])
+        np.testing.assert_allclose(vectorized, scalar, rtol=1e-9)
+
+
+class TestBlackScholesDelta:
+    """2026-07-16新增：Gemini建議④（用delta過濾大單流裡的非方向性噪音）需要
+    先有delta可以算——這裡驗證公式本身跟教科書closed-form一致，供main.py
+    估算whale sweep大單delta時使用。"""
+
+    def test_call_matches_reference_formula(self):
+        result = black_scholes_delta(spot=100.0, strike=100.0, time_to_expiry_years=30 / 365, iv=0.35, option_type="call")
+        expected = reference_delta(100.0, 100.0, 30 / 365, 0.35, "call")
+        assert result == pytest.approx(expected, rel=1e-9)
+
+    def test_put_matches_reference_formula(self):
+        result = black_scholes_delta(spot=100.0, strike=110.0, time_to_expiry_years=45 / 365, iv=0.5, option_type="put")
+        expected = reference_delta(100.0, 110.0, 45 / 365, 0.5, "put")
+        assert result == pytest.approx(expected, rel=1e-9)
+
+    def test_call_delta_between_zero_and_one(self):
+        for strike in [50.0, 90.0, 100.0, 110.0, 200.0]:
+            d = black_scholes_delta(spot=100.0, strike=strike, time_to_expiry_years=0.25, iv=0.4, option_type="call")
+            assert 0.0 <= d <= 1.0
+
+    def test_put_delta_between_negative_one_and_zero(self):
+        for strike in [50.0, 90.0, 100.0, 110.0, 200.0]:
+            d = black_scholes_delta(spot=100.0, strike=strike, time_to_expiry_years=0.25, iv=0.4, option_type="put")
+            assert -1.0 <= d <= 0.0
+
+    def test_atm_call_delta_near_half(self):
+        # 高度價平、時間夠長時，call delta理論上接近0.5（不是恰好0.5，drift項會讓它偏一點）。
+        d = black_scholes_delta(spot=100.0, strike=100.0, time_to_expiry_years=30 / 365, iv=0.3, option_type="call")
+        assert 0.4 < d < 0.6
+
+    def test_deep_itm_call_delta_near_one(self):
+        d = black_scholes_delta(spot=200.0, strike=50.0, time_to_expiry_years=30 / 365, iv=0.3, option_type="call")
+        assert d > 0.95
+
+    def test_deep_otm_call_delta_near_zero(self):
+        d = black_scholes_delta(spot=50.0, strike=200.0, time_to_expiry_years=30 / 365, iv=0.3, option_type="call")
+        assert d < 0.05
+
+    def test_expired_or_zero_iv_returns_nan_not_crash(self):
+        assert np.isnan(black_scholes_delta(spot=100.0, strike=100.0, time_to_expiry_years=0.0, iv=0.3, option_type="call"))
+        assert np.isnan(black_scholes_delta(spot=100.0, strike=100.0, time_to_expiry_years=0.1, iv=0.0, option_type="put"))
+
+    def test_vectorized_option_type_array_matches_scalar(self):
+        strikes = np.array([90.0, 100.0, 110.0])
+        types = np.array(["call", "put", "call"])
+        vectorized = black_scholes_delta(spot=100.0, strike=strikes, time_to_expiry_years=0.2, iv=0.4, option_type=types)
+        scalar = np.array([
+            black_scholes_delta(spot=100.0, strike=k, time_to_expiry_years=0.2, iv=0.4, option_type=t)
+            for k, t in zip(strikes, types)
         ])
         np.testing.assert_allclose(vectorized, scalar, rtol=1e-9)
 

@@ -78,6 +78,36 @@ class OptionLeg:
     put_iv: float
 
 
+def black_scholes_delta(
+    spot: float | np.ndarray,
+    strike: float | np.ndarray,
+    time_to_expiry_years: float | np.ndarray,
+    iv: float | np.ndarray,
+    option_type: OptionType | np.ndarray,
+    risk_free_rate: float = 0.045,
+) -> np.ndarray:
+    """Black-Scholes Delta. Call delta = N(d1); put delta = N(d1) - 1.
+
+    Vectorized the same way as black_scholes_gamma. `option_type` can be a
+    single "call"/"put" string (broadcasts) or an array of them matching
+    strike/iv element-wise.
+    """
+    spot = np.asarray(spot, dtype=float)
+    strike = np.asarray(strike, dtype=float)
+    time_to_expiry = np.asarray(time_to_expiry_years, dtype=float)
+    iv = np.asarray(iv, dtype=float)
+
+    safe = (time_to_expiry > 0) & (iv > 0) & (spot > 0) & (strike > 0)
+    time_safe = np.where(safe, time_to_expiry, 1.0)
+    iv_safe = np.where(safe, iv, 1.0)
+
+    d1 = _d1(spot, strike, time_safe, risk_free_rate, iv_safe)
+    call_delta = norm.cdf(d1)
+    is_call = np.asarray(option_type) == "call"
+    delta = np.where(is_call, call_delta, call_delta - 1.0)
+    return np.where(safe, delta, np.nan)
+
+
 def compute_net_gex_by_strike(
     legs: Sequence[OptionLeg],
     spot: float,
@@ -86,8 +116,12 @@ def compute_net_gex_by_strike(
 ) -> list[dict]:
     """Net GEX per strike for one expiry.
 
-    Returns a list of dicts (strike, call_gex, put_gex, net_gex), sorted by
-    strike ascending, ready to feed a bar/area chart directly.
+    Returns a list of dicts (strike, call_gex, put_gex, net_gex, call_iv,
+    put_iv), sorted by strike ascending, ready to feed a bar/area chart
+    directly. call_iv/put_iv are carried through unchanged (not used for the
+    chart itself) so callers can look them up later to estimate delta for an
+    out-of-band event at the same strike/expiry (e.g. a whale-sweep trade)
+    without re-fetching the whole chain.
     """
     if not legs:
         return []
@@ -114,6 +148,8 @@ def compute_net_gex_by_strike(
             "call_gex": float(call_gex[i]),
             "put_gex": float(put_gex[i]),
             "net_gex": float(net_gex[i]),
+            "call_iv": float(call_iv[i]),
+            "put_iv": float(put_iv[i]),
         }
         for i in order
     ]

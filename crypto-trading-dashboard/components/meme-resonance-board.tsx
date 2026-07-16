@@ -80,8 +80,9 @@ export function MemeResonanceBoard({ item }: MemeResonanceBoardProps) {
         </div>
       </div>
 
-      {/* AI 共振摘要 */}
-      <div className="rounded-xl border border-border/60 bg-black/30 p-3">
+      {/* AI 共振摘要（2026-07-16修復：bg-black/30改用bg-background/40，
+         新版淺色主題下不再是一片混濁灰黑色，見 whale-sweep-stream.tsx 同一批修復說明） */}
+      <div className="rounded-xl border border-border/60 bg-background/40 p-3">
         <p className="font-mono text-xs leading-relaxed text-long">
           {item.lastResonanceSummary ? (
             <>[AI Audit]: {item.lastResonanceSummary}</>

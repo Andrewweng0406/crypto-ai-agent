@@ -10,12 +10,16 @@ interface SqueezeFeedProps {
   isLoading: boolean
 }
 
-// 實時擠壓警報滾動牆：彭博終端機風格的黑底綠字事件日誌，市場掃描跟迷因雷達
+// 實時擠壓警報滾動牆：終端機風格的事件日誌，市場掃描跟迷因雷達
 // 共用同一份 green 燈號事件（來自 /api/squeeze-feed）。⚠️ 這套判斷未經回測
 // 驗證，不是高勝率保證，純粹是事件記錄。
+//
+// 2026-07-16修復：底色原本硬寫死 bg-black/40，在新版淺色主題下會變成一片
+// 混濁的灰黑色（新版主題後來才加，這個「終端機風格」面板沒有一起更新到）。
+// 改用 bg-background/40 跟卡片背景色連動，深淺色主題都會自動對。
 export function SqueezeFeed({ items, isLoading }: SqueezeFeedProps) {
   return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-border/60 bg-black/40 p-4">
+    <div className="flex flex-col gap-2 rounded-2xl border border-border/60 bg-background/40 p-4">
       <div className="flex items-center justify-between">
         <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           <Zap className="size-3.5 text-long" aria-hidden="true" />
