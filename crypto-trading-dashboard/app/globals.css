@@ -11,6 +11,10 @@
   --color-long-foreground: var(--long-foreground);
   --color-short: var(--short);
   --color-short-foreground: var(--short-foreground);
+  --color-chart-bull: var(--chart-bull);
+  --color-chart-bull-foreground: var(--chart-bull-foreground);
+  --color-chart-bear: var(--chart-bear);
+  --color-chart-bear-foreground: var(--chart-bear-foreground);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -52,48 +56,90 @@
 }
 
 :root:root {
-  color-scheme: dark;
-  --background: oklch(0.16 0.006 264);
-  --foreground: oklch(0.97 0.004 264);
-  --card: oklch(0.205 0.007 264);
-  --card-foreground: oklch(0.97 0.004 264);
-  --popover: oklch(0.21 0.007 264);
-  --popover-foreground: oklch(0.97 0.004 264);
-  /* 2026-07-16 顧問備忘錄修復：--primary（選中分頁/按鈕等UI狀態色）過去
-     跟 --long（做多/看漲語意色）是完全同一個綠色值——盯盤時綠色理論上該是
-     「反射動作」看到就懂賺錢/看漲，不該同時也代表「這個按鈕現在被選中」。
-     改成中性的淺灰白，跟下面 --long 的綠色徹底脫鉤，--long/--short 之後
-     永遠只代表多/空、漲/跌、贏/輸。 */
-  --primary: oklch(0.9 0.006 264);
-  --primary-foreground: oklch(0.16 0.006 264);
-  --secondary: oklch(0.27 0.008 264);
-  --secondary-foreground: oklch(0.97 0.004 264);
-  --muted: oklch(0.25 0.007 264);
-  --muted-foreground: oklch(0.68 0.01 264);
-  --accent: oklch(0.28 0.008 264);
-  --accent-foreground: oklch(0.97 0.004 264);
-  --destructive: oklch(0.64 0.22 20);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.9 0.006 264);
-  --long: oklch(0.72 0.16 154);
-  --long-foreground: oklch(0.16 0.02 154);
-  --short: oklch(0.64 0.22 20);
-  --short-foreground: oklch(0.15 0.02 20);
-  --chart-1: oklch(0.72 0.16 154);
-  --chart-2: oklch(0.64 0.22 20);
-  --chart-3: oklch(0.68 0.01 264);
-  --chart-4: oklch(0.5 0.008 264);
-  --chart-5: oklch(0.35 0.008 264);
+  color-scheme: light;
+  --background: #ece6db;
+  --foreground: #3d3527;
+  --card: #f7f3ea;
+  --card-foreground: #3d3527;
+  --popover: #fffdf8;
+  --popover-foreground: #3d3527;
+  --primary: #4a4030;
+  --primary-foreground: #f7f3ea;
+  --secondary: #e2dccc;
+  --secondary-foreground: #3d3527;
+  --muted: #e2dccc;
+  --muted-foreground: #8c8272;
+  --accent: #e2dccc;
+  --accent-foreground: #3d3527;
+  --destructive: #a3685f;
+  --border: rgba(70, 60, 45, 0.08);
+  --input: rgba(70, 60, 45, 0.14);
+  --ring: #4a4030;
+  --long: #5c6e4f;
+  --long-foreground: #f7f3ea;
+  --short: #a3685f;
+  --short-foreground: #f7f3ea;
+  --chart-1: #5c6e4f;
+  --chart-2: #a3685f;
+  --chart-3: #8c8272;
+  --chart-4: #b3a890;
+  --chart-5: #d9d0bf;
   --radius: 0.75rem;
-  --sidebar: oklch(0.19 0.007 264);
-  --sidebar-foreground: oklch(0.97 0.004 264);
-  --sidebar-primary: oklch(0.9 0.006 264);
-  --sidebar-primary-foreground: oklch(0.16 0.006 264);
-  --sidebar-accent: oklch(0.27 0.008 264);
-  --sidebar-accent-foreground: oklch(0.97 0.004 264);
-  --sidebar-border: oklch(1 0 0 / 9%);
-  --sidebar-ring: oklch(0.9 0.006 264);
+  --sidebar: #f2ede2;
+  --sidebar-foreground: #3d3527;
+  --sidebar-primary: #4a4030;
+  --sidebar-primary-foreground: #f7f3ea;
+  --sidebar-accent: #e2dccc;
+  --sidebar-accent-foreground: #3d3527;
+  --sidebar-border: rgba(70, 60, 45, 0.08);
+  --sidebar-ring: #4a4030;
+
+  /* 2026-07-15 降壓改版：K線/GEX/清算牆/RSI2/區間量表這五個「技術圖表」
+     元件維持業界標準紅漲綠跌，不跟著 Sand & Sage 暖色系走，也不隨深淺色
+     模式切換而改變（.dark 不重新定義這兩個 token）——見設計規格文件。 */
+  --chart-bull: #1f9d55;
+  --chart-bull-foreground: #ffffff;
+  --chart-bear: #d1453d;
+  --chart-bear-foreground: #ffffff;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #1b1712;
+  --foreground: #f0e9db;
+  --card: #251f18;
+  --card-foreground: #f0e9db;
+  --popover: #2b241c;
+  --popover-foreground: #f0e9db;
+  --primary: #f0e9db;
+  --primary-foreground: #1b1712;
+  --secondary: #322a20;
+  --secondary-foreground: #f0e9db;
+  --muted: #2b241c;
+  --muted-foreground: #a89a85;
+  --accent: #322a20;
+  --accent-foreground: #f0e9db;
+  --destructive: #d19a91;
+  --border: rgba(240, 233, 219, 0.09);
+  --input: rgba(240, 233, 219, 0.12);
+  --ring: #f0e9db;
+  --long: #93b17e;
+  --long-foreground: #1b1712;
+  --short: #d19a91;
+  --short-foreground: #1b1712;
+  --chart-1: #93b17e;
+  --chart-2: #d19a91;
+  --chart-3: #a89a85;
+  --chart-4: #7d715d;
+  --chart-5: #322a20;
+  --sidebar: #211b15;
+  --sidebar-foreground: #f0e9db;
+  --sidebar-primary: #f0e9db;
+  --sidebar-primary-foreground: #1b1712;
+  --sidebar-accent: #322a20;
+  --sidebar-accent-foreground: #f0e9db;
+  --sidebar-border: rgba(240, 233, 219, 0.09);
+  --sidebar-ring: #f0e9db;
 }
 
 @layer base {
