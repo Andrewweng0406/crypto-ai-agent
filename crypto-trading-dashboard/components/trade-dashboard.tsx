@@ -152,7 +152,7 @@ export function TradeDashboard() {
   const {
     data: rawWhaleSweep,
     isLoading: whaleSweepLoading,
-  } = useSWR<BackendWhaleSweepResponse>(isOptionsMode ? "/api/options/whale-sweep" : null, fetcher, {
+  } = useSWR<BackendWhaleSweepResponse>(isOptionsMode || isOverviewMode ? "/api/options/whale-sweep" : null, fetcher, {
     refreshInterval: 15000,
   })
 
@@ -398,6 +398,7 @@ export function TradeDashboard() {
           usStocks={usStockData.stocks}
           usStocksLoading={usStocksLoading}
           usStocksError={usStocksError?.message}
+          whaleSweepItems={whaleSweepItems}
           onSelectOptions={(symbol) => {
             setSelectedSymbol(symbol)
             setMode("optionsAnalytics")

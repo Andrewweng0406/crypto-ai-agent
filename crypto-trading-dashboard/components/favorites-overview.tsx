@@ -2,7 +2,9 @@
 
 import { AlertTriangle, Star } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { type OptionsGexData, type USStockSignalState, formatPrice } from "@/lib/signals"
+import { type OptionsGexData, type USStockSignalState, type WhaleSweepItem, formatPrice } from "@/lib/signals"
+import { calculateMarketTrend } from "@/lib/confluence"
+import { ConfluenceBadge } from "@/components/confluence-badge"
 
 interface FavoritesOverviewProps {
   optionsUnderlyings: OptionsGexData[]
@@ -11,6 +13,7 @@ interface FavoritesOverviewProps {
   usStocks: USStockSignalState[]
   usStocksLoading: boolean
   usStocksError?: string
+  whaleSweepItems: WhaleSweepItem[]
   onSelectOptions: (symbol: string) => void
   onSelectUSStock: (symbol: string) => void
 }
@@ -30,6 +33,7 @@ export function FavoritesOverview({
   usStocks,
   usStocksLoading,
   usStocksError,
+  whaleSweepItems,
   onSelectOptions,
   onSelectUSStock,
 }: FavoritesOverviewProps) {
@@ -102,6 +106,19 @@ export function FavoritesOverview({
             {usStocks.map((s) => {
               const isOpen = s.status === "OPEN" && s.signal
               const change = s.orbMonitoring.dayChangePct
+              // 沒有部位時，用多因子共振引擎（GEX臨界點+ORB突破+RVOL+大盤濾網+大單流）
+              // 給一個比「No Signal」更有資訊量的白話文標籤——期權GEX是另一份自選清單，
+              // 不一定每檔美股都有對應資料，找不到就讓引擎自己退化成只用ORB資料判斷。
+              const gexMatch = !isOpen ? optionsUnderlyings.find((u) => u.symbol === s.displayName) ?? null : null
+              const confluence = !isOpen
+                ? calculateMarketTrend({
+                    symbol: s.displayName,
+                    currentPrice: s.currentPrice,
+                    orb: s.orbMonitoring,
+                    gex: gexMatch,
+                    recentSweeps: whaleSweepItems.filter((w) => w.symbol === s.displayName),
+                  })
+                : null
               return (
                 <button
                   key={s.symbol}
@@ -121,9 +138,7 @@ export function FavoritesOverview({
                         {s.signal!.side} {s.signal!.leverage}x
                       </span>
                     ) : (
-                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
-                        No Signal
-                      </span>
+                      confluence && <ConfluenceBadge result={confluence} />
                     )}
                   </div>
                   <div className="flex items-baseline justify-between gap-2">
