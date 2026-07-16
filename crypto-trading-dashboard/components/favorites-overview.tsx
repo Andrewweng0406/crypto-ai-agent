@@ -1,10 +1,17 @@
 "use client"
 
-import { AlertTriangle, Star } from "lucide-react"
+import { AlertTriangle, Star, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type OptionsGexData, type USStockSignalState, type WhaleSweepItem, formatPrice } from "@/lib/signals"
 import { calculateMarketTrend } from "@/lib/confluence"
 import { ConfluenceBadge } from "@/components/confluence-badge"
+
+export interface ModuleSummary {
+  key: string
+  icon: LucideIcon
+  label: string
+  value: string
+}
 
 interface FavoritesOverviewProps {
   optionsUnderlyings: OptionsGexData[]
@@ -14,6 +21,8 @@ interface FavoritesOverviewProps {
   usStocksLoading: boolean
   usStocksError?: string
   whaleSweepItems: WhaleSweepItem[]
+  moduleSummaries: ModuleSummary[]
+  onSelectModule: (key: string) => void
   onSelectOptions: (symbol: string) => void
   onSelectUSStock: (symbol: string) => void
 }
@@ -34,6 +43,8 @@ export function FavoritesOverview({
   usStocksLoading,
   usStocksError,
   whaleSweepItems,
+  moduleSummaries,
+  onSelectModule,
   onSelectOptions,
   onSelectUSStock,
 }: FavoritesOverviewProps) {
@@ -52,6 +63,28 @@ export function FavoritesOverview({
         彙整「📊 期權分析」與「美股 ORB」兩個模塊目前的自選清單，點卡片可跳去該分頁看完整細節；
         新增／移除標的請到各自分頁的搜尋框操作。
       </div>
+
+      {moduleSummaries.length > 0 && (
+        <section className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {moduleSummaries.map((item) => {
+            const Icon = item.icon
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => onSelectModule(item.key)}
+                className="flex flex-col gap-1 rounded-xl border border-border/60 bg-card/60 px-3 py-2.5 text-left transition-colors hover:border-primary/60 hover:bg-primary/[0.06]"
+              >
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                  {item.label}
+                </span>
+                <span className="text-sm font-semibold text-foreground">{item.value}</span>
+              </button>
+            )
+          })}
+        </section>
+      )}
 
       {isEmpty && (
         <div className="rounded-2xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">

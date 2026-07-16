@@ -59,8 +59,13 @@
   --card-foreground: oklch(0.97 0.004 264);
   --popover: oklch(0.21 0.007 264);
   --popover-foreground: oklch(0.97 0.004 264);
-  --primary: oklch(0.72 0.16 154);
-  --primary-foreground: oklch(0.16 0.02 154);
+  /* 2026-07-16 顧問備忘錄修復：--primary（選中分頁/按鈕等UI狀態色）過去
+     跟 --long（做多/看漲語意色）是完全同一個綠色值——盯盤時綠色理論上該是
+     「反射動作」看到就懂賺錢/看漲，不該同時也代表「這個按鈕現在被選中」。
+     改成中性的淺灰白，跟下面 --long 的綠色徹底脫鉤，--long/--short 之後
+     永遠只代表多/空、漲/跌、贏/輸。 */
+  --primary: oklch(0.9 0.006 264);
+  --primary-foreground: oklch(0.16 0.006 264);
   --secondary: oklch(0.27 0.008 264);
   --secondary-foreground: oklch(0.97 0.004 264);
   --muted: oklch(0.25 0.007 264);
@@ -70,7 +75,7 @@
   --destructive: oklch(0.64 0.22 20);
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.72 0.16 154);
+  --ring: oklch(0.9 0.006 264);
   --long: oklch(0.72 0.16 154);
   --long-foreground: oklch(0.16 0.02 154);
   --short: oklch(0.64 0.22 20);
@@ -83,12 +88,12 @@
   --radius: 0.75rem;
   --sidebar: oklch(0.19 0.007 264);
   --sidebar-foreground: oklch(0.97 0.004 264);
-  --sidebar-primary: oklch(0.72 0.16 154);
-  --sidebar-primary-foreground: oklch(0.16 0.02 154);
+  --sidebar-primary: oklch(0.9 0.006 264);
+  --sidebar-primary-foreground: oklch(0.16 0.006 264);
   --sidebar-accent: oklch(0.27 0.008 264);
   --sidebar-accent-foreground: oklch(0.97 0.004 264);
   --sidebar-border: oklch(1 0 0 / 9%);
-  --sidebar-ring: oklch(0.72 0.16 154);
+  --sidebar-ring: oklch(0.9 0.006 264);
 }
 
 @layer base {

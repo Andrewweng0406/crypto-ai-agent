@@ -2,7 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
-import { Activity, AlertTriangle, Radar, Zap } from "lucide-react"
+import {
+  Activity,
+  AlertTriangle,
+  CandlestickChart,
+  Coins,
+  Flame,
+  FlaskConical,
+  Newspaper,
+  PieChart,
+  Radar,
+  ScanSearch,
+  Star,
+  Target,
+  Zap,
+  type LucideIcon,
+} from "lucide-react"
 import {
   adaptHistory,
   adaptLiquidationWalls,
@@ -12,6 +27,7 @@ import {
   adaptMemeWatchlist,
   adaptNewsAgent,
   adaptOptionsGexList,
+  adaptRSI2List,
   adaptSignalList,
   adaptSqueezeFeed,
   adaptUSStockHistory,
@@ -27,6 +43,7 @@ import {
   type BackendMemeTradeListResponse,
   type BackendNewsAgentResponse,
   type BackendOptionsGexListResponse,
+  type BackendRSI2ListResponse,
   type BackendSignalListResponse,
   type BackendSqueezeFeedResponse,
   type BackendUSStockHistoryResponse,
@@ -78,24 +95,74 @@ type TabKey =
   | "overview"
   | "highWinRate"
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "overview", label: "⭐ 我的關注" },
-  { key: "major", label: "主流幣" },
-  { key: "scan", label: "市場掃描" },
-  { key: "meme", label: "迷因雷達" },
-  { key: "memeTrade", label: "🔥 迷因當沖" },
-  { key: "usStock", label: "美股 ORB" },
-  { key: "optionsAnalytics", label: "📊 期權分析" },
-  { key: "newsAgent", label: "新聞" },
-  { key: "highWinRate", label: "🎯 高勝率策略" },
-  { key: "backtest", label: "🚀 回測沙盒" },
+interface TabDef {
+  key: TabKey
+  label: string
+  icon: LucideIcon
+}
+
+interface TabCategory {
+  key: string
+  label: string
+  tabs: TabDef[]
+}
+
+// 2026-07-16 顧問備忘錄修復：原本十個分頁攤平在同一層，彼此之間沒有任何分組
+// 線索。這裡收成五個大分類（總覽/加密貨幣/美股/情報/回測實驗室），分類邊界
+// 直接沿用程式碼裡早就存在的 isMemeMode/isUSStockMode 這種資產類別分組方式。
+// emoji 換成同一套 lucide-react 圖示，尺寸/粗細一致，不再是「有的分頁有、
+// 有的沒有」的不一致標記。
+const TAB_CATEGORIES: TabCategory[] = [
+  {
+    key: "overview",
+    label: "總覽",
+    tabs: [{ key: "overview", label: "我的關注", icon: Star }],
+  },
+  {
+    key: "crypto",
+    label: "加密貨幣",
+    tabs: [
+      { key: "major", label: "主流幣", icon: Coins },
+      { key: "scan", label: "市場掃描", icon: ScanSearch },
+      { key: "meme", label: "迷因雷達", icon: Radar },
+      { key: "memeTrade", label: "迷因當沖", icon: Flame },
+    ],
+  },
+  {
+    key: "usStocks",
+    label: "美股",
+    tabs: [
+      { key: "usStock", label: "美股 ORB", icon: CandlestickChart },
+      { key: "optionsAnalytics", label: "期權分析", icon: PieChart },
+      { key: "highWinRate", label: "高勝率策略", icon: Target },
+    ],
+  },
+  {
+    key: "intel",
+    label: "情報",
+    tabs: [{ key: "newsAgent", label: "新聞輿情", icon: Newspaper }],
+  },
+  {
+    key: "backtestLab",
+    label: "回測實驗室",
+    tabs: [{ key: "backtest", label: "回測沙盒", icon: FlaskConical }],
+  },
 ]
+
+function findCategoryForTab(tabKey: TabKey): TabCategory {
+  return TAB_CATEGORIES.find((category) => category.tabs.some((tab) => tab.key === tabKey)) ?? TAB_CATEGORIES[0]
+}
 
 export function TradeDashboard() {
   const [mode, setMode] = useState<TabKey>("overview")
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [newsCategory, setNewsCategory] = useState<NewsCategory | "all">("all")
   const [liquidationSymbol, setLiquidationSymbol] = useState<string>("BTC")
+
+  // 目前所在的大分類永遠直接從 mode 反推，不用額外狀態——點大分類本身時，
+  // 直接把 mode 切到該分類的第一個子分頁即可，不需要記住「使用者剛點了哪個
+  // 分類」這種額外狀態，減少一種可能跟 mode 不同步的情境。
+  const activeCategory = findCategoryForTab(mode)
 
   const isMemeMode = mode === "meme"
   const isMemeTradeMode = mode === "memeTrade"
@@ -129,7 +196,7 @@ export function TradeDashboard() {
     data: rawMemeTrade,
     error: memeTradeError,
     isLoading: memeTradeLoading,
-  } = useSWR<BackendMemeTradeListResponse>(isMemeTradeMode ? "/api/meme-trade" : null, fetcher, {
+  } = useSWR<BackendMemeTradeListResponse>(isMemeTradeMode || isOverviewMode ? "/api/meme-trade" : null, fetcher, {
     refreshInterval: 5000,
   })
 
@@ -160,7 +227,7 @@ export function TradeDashboard() {
     data: rawMemes,
     error: memesError,
     isLoading: memesLoading,
-  } = useSWR<BackendMemeRadarResponse>(isMemeMode ? "/api/memes" : null, fetcher, {
+  } = useSWR<BackendMemeRadarResponse>(isMemeMode || isOverviewMode ? "/api/memes" : null, fetcher, {
     refreshInterval: 15000,
   })
 
@@ -183,7 +250,7 @@ export function TradeDashboard() {
     data: rawNews,
     error: newsError,
     isLoading: newsLoading,
-  } = useSWR<BackendNewsAgentResponse>(isNewsAgentMode ? "/api/ai-agent/news" : null, fetcher, {
+  } = useSWR<BackendNewsAgentResponse>(isNewsAgentMode || isOverviewMode ? "/api/ai-agent/news" : null, fetcher, {
     refreshInterval: 30000,
   })
 
@@ -196,9 +263,29 @@ export function TradeDashboard() {
   const {
     data: rawSqueezeFeed,
     isLoading: squeezeFeedLoading,
-  } = useSWR<BackendSqueezeFeedResponse>(isSqueezeFeedMode ? "/api/squeeze-feed" : null, fetcher, {
+  } = useSWR<BackendSqueezeFeedResponse>(isSqueezeFeedMode || isOverviewMode ? "/api/squeeze-feed" : null, fetcher, {
     refreshInterval: 20000,
   })
+
+  // ⭐ 我的關注戰情室摘要用：主流幣/市場掃描的持倉數（rawSignals 綁定單一
+  // universe 字串，總覽頁需要兩個都看，所以另外開兩支輕量的），以及RSI2
+  // 均值回歸清單（高勝率策略分頁本身是獨立元件自己抓資料，這裡總覽頁需要
+  // 另外抓一次算「目前幾檔有部位」）。
+  const { data: rawMajorSignalsOverview } = useSWR<BackendSignalListResponse>(
+    isOverviewMode ? "/api/signals?universe=major" : null,
+    fetcher,
+    { refreshInterval: 20000 },
+  )
+  const { data: rawScanSignalsOverview } = useSWR<BackendSignalListResponse>(
+    isOverviewMode ? "/api/signals?universe=scan" : null,
+    fetcher,
+    { refreshInterval: 20000 },
+  )
+  const { data: rawRsi2Overview } = useSWR<BackendRSI2ListResponse>(
+    isOverviewMode ? "/api/rsi2-meanrev" : null,
+    fetcher,
+    { refreshInterval: 20000 },
+  )
 
   const { data: rawLiquidationWalls } = useSWR<BackendLiquidationWallsResponse>(
     mode === "major" ? "/api/market/liquidation-walls" : null,
@@ -248,6 +335,42 @@ export function TradeDashboard() {
   )
   const whaleSweepItems = useMemo(() => (rawWhaleSweep ? adaptWhaleSweep(rawWhaleSweep) : []), [rawWhaleSweep])
   const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
+
+  // ⭐ 我的關注戰情室：每個模塊貢獻一行最精簡的摘要，點下去直接跳去對應
+  // 分頁——這樣打開網站第一眼看到的是「整個系統現在的狀態」，不用先猜十個
+  // 分頁分別代表什麼。只在總覽頁計算，其餘分頁這些 raw*Overview 都是 undefined。
+  const moduleSummaries = useMemo(() => {
+    if (!isOverviewMode) return []
+    const majorOpen = rawMajorSignalsOverview ? adaptSignalList(rawMajorSignalsOverview).filter((s) => s.status === "OPEN").length : null
+    const scanOpen = rawScanSignalsOverview ? adaptSignalList(rawScanSignalsOverview).filter((s) => s.status === "OPEN").length : null
+    const memeTradeOpen = rawMemeTrade ? adaptMemeTradeList(rawMemeTrade).filter((s) => s.status === "OPEN").length : null
+    const rsi2Open = rawRsi2Overview ? adaptRSI2List(rawRsi2Overview).stocks.filter((s) => s.status === "OPEN").length : null
+
+    return [
+      { key: "major" as const, icon: Coins, label: "主流幣", value: majorOpen === null ? "載入中…" : `${majorOpen} 個持倉中訊號` },
+      { key: "scan" as const, icon: ScanSearch, label: "市場掃描", value: scanOpen === null ? "載入中…" : `${scanOpen} 個持倉中訊號` },
+      { key: "meme" as const, icon: Radar, label: "迷因雷達", value: rawMemes ? `${memeAlerts.length} 筆爆量警報` : "載入中…" },
+      { key: "memeTrade" as const, icon: Flame, label: "迷因當沖", value: memeTradeOpen === null ? "載入中…" : `${memeTradeOpen} 個持倉中訊號` },
+      { key: "usStock" as const, icon: CandlestickChart, label: "美股 ORB", value: rawUSStocks ? `${usStockData.stocks.filter((s) => s.status === "OPEN").length} 個持倉中訊號` : "載入中…" },
+      { key: "optionsAnalytics" as const, icon: PieChart, label: "期權分析", value: rawOptionsGex ? `${optionsGexData.underlyings.length} 檔自選標的` : "載入中…" },
+      { key: "highWinRate" as const, icon: Target, label: "高勝率策略", value: rsi2Open === null ? "載入中…" : `${rsi2Open} 個持倉中訊號` },
+      { key: "newsAgent" as const, icon: Newspaper, label: "新聞輿情", value: rawNews ? `${newsItems.length} 則已分析新聞` : "載入中…" },
+    ]
+  }, [
+    isOverviewMode,
+    rawMajorSignalsOverview,
+    rawScanSignalsOverview,
+    rawMemeTrade,
+    rawRsi2Overview,
+    rawMemes,
+    memeAlerts.length,
+    rawUSStocks,
+    usStockData.stocks,
+    rawOptionsGex,
+    optionsGexData.underlyings.length,
+    rawNews,
+    newsItems.length,
+  ])
 
   // Keep the selection sane across tab switches and data refreshes: default
   // to the first open opportunity, and re-pick if the current selection
@@ -368,19 +491,46 @@ export function TradeDashboard() {
         </div>
       </header>
 
-      <div className="flex w-fit gap-1 rounded-full border border-border/60 bg-card p-1">
-        {TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setMode(tab.key)}
-            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
-              mode === tab.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex flex-col gap-2">
+        <div className="flex w-fit gap-1 rounded-full border border-border/60 bg-card p-1">
+          {TAB_CATEGORIES.map((category) => (
+            <button
+              key={category.key}
+              type="button"
+              onClick={() => setMode(category.tabs[0].key)}
+              className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
+                activeCategory.key === category.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {category.label}
+            </button>
+          ))}
+        </div>
+
+        {activeCategory.tabs.length > 1 && (
+          <div className="flex w-fit gap-1 rounded-xl border border-border/60 bg-card/60 p-1">
+            {activeCategory.tabs.map((tab) => {
+              const Icon = tab.icon
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setMode(tab.key)}
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
+                    mode === tab.key
+                      ? "bg-secondary text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="size-3.5" aria-hidden="true" />
+                  {tab.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {activeError && (
@@ -399,6 +549,8 @@ export function TradeDashboard() {
           usStocksLoading={usStocksLoading}
           usStocksError={usStocksError?.message}
           whaleSweepItems={whaleSweepItems}
+          moduleSummaries={moduleSummaries}
+          onSelectModule={(key) => setMode(key as TabKey)}
           onSelectOptions={(symbol) => {
             setSelectedSymbol(symbol)
             setMode("optionsAnalytics")
