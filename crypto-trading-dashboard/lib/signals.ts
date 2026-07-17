@@ -1407,6 +1407,112 @@ export function formatCompactUsd(value: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// 🏦 美股多機構研究彙總（獨立、實驗性模塊）：資料源自使用者本機執行的
+// moomoo_research_sync_local.py（透過moomoo/futu-api的
+// get_research_analyst_consensus / get_research_rating_summary /
+// get_research_morningstar_report 三支API，真實機構評級+晨星研報內容，不是
+// LLM生成的摘要）。has_data=false代表本機還沒同步過這個標的，不是沒有覆蓋。
+// ---------------------------------------------------------------------------
+
+export interface BackendInstitutionRating {
+  institution_name: string
+  rating: number | null
+  target_price: number | null
+  recommendation_date_str: string | null
+  rating_url: string | null
+}
+
+export interface BackendResearchBundleData {
+  symbol: string
+  has_data: boolean
+  consensus_high: number | null
+  consensus_average: number | null
+  consensus_low: number | null
+  consensus_total: number | null
+  consensus_rating: number | null
+  consensus_rating_label: string | null
+  consensus_buy_pct: number | null
+  consensus_hold_pct: number | null
+  consensus_sell_pct: number | null
+  institution_ratings: BackendInstitutionRating[]
+  morningstar_star_rating: number | null
+  morningstar_fair_value: number | null
+  morningstar_fair_value_context: string | null
+  morningstar_moat_label: string | null
+  morningstar_moat_context: string | null
+  morningstar_uncertainty_label: string | null
+  morningstar_financial_health_label: string | null
+  updated_at: string | null
+}
+
+export interface BackendResearchBundlesResponse {
+  underlyings: BackendResearchBundleData[]
+  updated_at: string | null
+}
+
+export interface InstitutionRating {
+  institutionName: string
+  rating: number | null
+  targetPrice: number | null
+  recommendationDateStr: string | null
+  ratingUrl: string | null
+}
+
+export interface ResearchBundleData {
+  symbol: string
+  hasData: boolean
+  consensusHigh: number | null
+  consensusAverage: number | null
+  consensusLow: number | null
+  consensusTotal: number | null
+  consensusRating: number | null
+  consensusRatingLabel: string | null
+  consensusBuyPct: number | null
+  consensusHoldPct: number | null
+  consensusSellPct: number | null
+  institutionRatings: InstitutionRating[]
+  morningstarStarRating: number | null
+  morningstarFairValue: number | null
+  morningstarFairValueContext: string | null
+  morningstarMoatLabel: string | null
+  morningstarMoatContext: string | null
+  morningstarUncertaintyLabel: string | null
+  morningstarFinancialHealthLabel: string | null
+  updatedAt: string | null
+}
+
+export function adaptResearchBundles(raw: BackendResearchBundlesResponse): ResearchBundleData[] {
+  return raw.underlyings.map((u) => ({
+    symbol: u.symbol,
+    hasData: u.has_data,
+    consensusHigh: u.consensus_high,
+    consensusAverage: u.consensus_average,
+    consensusLow: u.consensus_low,
+    consensusTotal: u.consensus_total,
+    consensusRating: u.consensus_rating,
+    consensusRatingLabel: u.consensus_rating_label,
+    consensusBuyPct: u.consensus_buy_pct,
+    consensusHoldPct: u.consensus_hold_pct,
+    consensusSellPct: u.consensus_sell_pct,
+    institutionRatings: u.institution_ratings.map((r) => ({
+      institutionName: r.institution_name,
+      rating: r.rating,
+      targetPrice: r.target_price,
+      recommendationDateStr: r.recommendation_date_str,
+      ratingUrl: r.rating_url,
+    })),
+    morningstarStarRating: u.morningstar_star_rating,
+    morningstarFairValue: u.morningstar_fair_value,
+    morningstarFairValueContext: u.morningstar_fair_value_context,
+    morningstarMoatLabel: u.morningstar_moat_label,
+    morningstarMoatContext: u.morningstar_moat_context,
+    morningstarUncertaintyLabel: u.morningstar_uncertainty_label,
+    morningstarFinancialHealthLabel: u.morningstar_financial_health_label,
+    updatedAt: u.updated_at,
+  }))
+}
+
+// ---------------------------------------------------------------------------
 // ⭐ 自選監控清單（動態Watchlist）：期權分析 + 美股ORB 共用同一組型別/回應格式
 // （後端 WatchlistResponse），美股ORB額外多一個 BingX 目錄搜尋回應。
 // ---------------------------------------------------------------------------

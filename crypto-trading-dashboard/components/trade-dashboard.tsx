@@ -8,6 +8,7 @@ import {
   Coins,
   Flame,
   FlaskConical,
+  Landmark,
   Newspaper,
   PieChart,
   Radar,
@@ -69,6 +70,7 @@ import { SqueezeFeed } from "@/components/squeeze-feed"
 import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
 import { BacktestSandboxPanel } from "@/components/backtest-sandbox-panel"
 import { HighWinRatePanel } from "@/components/high-winrate-panel"
+import { InstitutionResearchPanel } from "@/components/institution-research-panel"
 import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
 import { WatchlistEditor } from "@/components/watchlist-editor"
@@ -94,6 +96,7 @@ type TabKey =
   | "backtest"
   | "overview"
   | "highWinRate"
+  | "research"
 
 interface TabDef {
   key: TabKey
@@ -135,6 +138,7 @@ const TAB_CATEGORIES: TabCategory[] = [
       { key: "usStock", label: "美股 ORB", icon: CandlestickChart },
       { key: "optionsAnalytics", label: "期權分析", icon: PieChart },
       { key: "highWinRate", label: "高勝率策略", icon: Target },
+      { key: "research", label: "機構研究", icon: Landmark },
     ],
   },
   {
@@ -172,6 +176,7 @@ export function TradeDashboard() {
   const isBacktestMode = mode === "backtest"
   const isOverviewMode = mode === "overview"
   const isHighWinRateMode = mode === "highWinRate"
+  const isResearchMode = mode === "research"
 
   const {
     data: rawSignals,
@@ -185,7 +190,8 @@ export function TradeDashboard() {
     isOptionsMode ||
     isBacktestMode ||
     isOverviewMode ||
-    isHighWinRateMode
+    isHighWinRateMode ||
+    isResearchMode
       ? null
       : `/api/signals?universe=${mode}`,
     fetcher,
@@ -417,7 +423,7 @@ export function TradeDashboard() {
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedMemeTrade = memeTradeCoins.find((c) => c.symbol === selectedSymbol) ?? null
 
-  const activeError = isBacktestMode || isHighWinRateMode
+  const activeError = isBacktestMode || isHighWinRateMode || isResearchMode
     ? undefined
     : isOverviewMode
       // 2026-07-12 稽核修復：原本要「兩個來源同時出錯」才顯示頂部錯誤橫幅，
@@ -436,7 +442,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexError
                 : signalsError
-  const activeLoading = isBacktestMode || isHighWinRateMode
+  const activeLoading = isBacktestMode || isHighWinRateMode || isResearchMode
     ? false
     : isOverviewMode
       ? optionsGexLoading || usStocksLoading
@@ -451,7 +457,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexLoading
                 : signalsLoading
-  const isConnected = isBacktestMode || isHighWinRateMode
+  const isConnected = isBacktestMode || isHighWinRateMode || isResearchMode
     ? true
     : isOverviewMode
       ? (!optionsGexError && !!rawOptionsGex) || (!usStocksError && !!rawUSStocks)
@@ -772,6 +778,16 @@ export function TradeDashboard() {
             <strong className="text-foreground">進場判斷永遠只認前一天已確認收盤的訊號</strong>
             ，不會被盤中估算值誤導。均值回歸策略平均持倉1-3天，設計目標是高勝率+低回撤，不是跟大盤比總報酬。
             單次回測/滾動式驗證請至「🚀 回測沙盒」分頁。
+          </p>
+        </>
+      ) : isResearchMode ? (
+        <>
+          <InstitutionResearchPanel />
+          <p className="text-center text-xs text-muted-foreground">
+            機構研究為獨立、實驗性功能：資料源自使用者本機執行的 moomoo 研究資料同步工具（選擇性回傳），透過
+            moomoo/futu-api 取得真實分析師共識目標價、逐一機構評級明細（含原始新聞來源連結）與晨星研報原文，
+            <strong className="text-foreground">不是AI生成的摘要，純粹是機構觀點整理，不是交易訊號</strong>
+            。涵蓋標的為美股ORB跟期權分析兩份關注清單的聯集，本機工具沒開著時舊資料仍會顯示，只是不會更新。
           </p>
         </>
       ) : isBacktestMode ? (
