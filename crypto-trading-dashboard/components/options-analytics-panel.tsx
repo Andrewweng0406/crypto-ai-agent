@@ -5,6 +5,7 @@ import { type OptionsGexData, type WhaleSweepItem, formatPrice } from "@/lib/sig
 import { GexWallChart } from "@/components/gex-wall-chart"
 import { WhaleSweepStream } from "@/components/whale-sweep-stream"
 import { WatchlistEditor } from "@/components/watchlist-editor"
+import { OptionStrategyCard } from "@/components/option-strategy-card"
 
 interface OptionsAnalyticsPanelProps {
   underlyings: OptionsGexData[]
@@ -112,6 +113,14 @@ export function OptionsAnalyticsPanel({
         <div className="flex h-64 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground md:h-80">
           {isLoading ? "載入期權分析中…" : "選一檔標的查看 GEX 分佈牆"}
         </div>
+      )}
+
+      {selected?.hasData && (
+        <OptionStrategyCard
+          key={selected.symbol}
+          gex={selected}
+          recentSweeps={whaleSweepItems.filter((item) => item.symbol === selected.symbol)}
+        />
       )}
 
       <WhaleSweepStream

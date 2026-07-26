@@ -1513,6 +1513,110 @@ export function adaptResearchBundles(raw: BackendResearchBundlesResponse): Resea
 }
 
 // ---------------------------------------------------------------------------
+// 🎯 期權賣方價差策略（獨立、實驗性模塊）：sentiment 由前端 confluence engine
+// （lib/confluence.ts 的 calculateMarketTrend）判斷後傳給後端，後端只負責用
+// 真實期權鏈報價算出實際能下單的價差組合，不重複判斷方向。win_rate_estimate
+// 是Delta理論估算的區間字串（如"70-80%"），不是回測驗證過的統計勝率。
+// ---------------------------------------------------------------------------
+
+export type OptionStrategySentiment = "bullish" | "bearish" | "neutral"
+
+export interface BackendOptionStrategyLeg {
+  action: "SELL" | "BUY"
+  option_type: "PUT" | "CALL"
+  strike_price: number
+  reason: string
+}
+
+export interface BackendOptionStrategyFinancials {
+  max_margin_required: number
+  max_profit: number
+  max_loss: number
+  risk_reward_ratio: string
+}
+
+export interface BackendOptionStrategyDetail {
+  name: string
+  type: "put_credit" | "call_credit" | "iron_condor"
+  win_rate_estimate: string
+  expiration_date: string
+  legs: BackendOptionStrategyLeg[]
+  financials: BackendOptionStrategyFinancials
+  ai_advice: string
+}
+
+export interface BackendOptionStrategyResponse {
+  symbol: string
+  current_price: number
+  market_sentiment: string
+  strategy: BackendOptionStrategyDetail | null
+  message: string | null
+  win_rate_disclaimer: string
+}
+
+export interface OptionStrategyLeg {
+  action: "SELL" | "BUY"
+  optionType: "PUT" | "CALL"
+  strikePrice: number
+  reason: string
+}
+
+export interface OptionStrategyDetail {
+  name: string
+  type: "put_credit" | "call_credit" | "iron_condor"
+  winRateEstimate: string
+  expirationDate: string
+  legs: OptionStrategyLeg[]
+  financials: {
+    maxMarginRequired: number
+    maxProfit: number
+    maxLoss: number
+    riskRewardRatio: string
+  }
+  aiAdvice: string
+}
+
+export interface OptionStrategyResult {
+  symbol: string
+  currentPrice: number
+  marketSentiment: string
+  strategy: OptionStrategyDetail | null
+  message: string | null
+  winRateDisclaimer: string
+}
+
+export function adaptOptionStrategy(raw: BackendOptionStrategyResponse): OptionStrategyResult {
+  return {
+    symbol: raw.symbol,
+    currentPrice: raw.current_price,
+    marketSentiment: raw.market_sentiment,
+    message: raw.message,
+    winRateDisclaimer: raw.win_rate_disclaimer,
+    strategy: raw.strategy
+      ? {
+          name: raw.strategy.name,
+          type: raw.strategy.type,
+          winRateEstimate: raw.strategy.win_rate_estimate,
+          expirationDate: raw.strategy.expiration_date,
+          legs: raw.strategy.legs.map((l) => ({
+            action: l.action,
+            optionType: l.option_type,
+            strikePrice: l.strike_price,
+            reason: l.reason,
+          })),
+          financials: {
+            maxMarginRequired: raw.strategy.financials.max_margin_required,
+            maxProfit: raw.strategy.financials.max_profit,
+            maxLoss: raw.strategy.financials.max_loss,
+            riskRewardRatio: raw.strategy.financials.risk_reward_ratio,
+          },
+          aiAdvice: raw.strategy.ai_advice,
+        }
+      : null,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ⭐ 自選監控清單（動態Watchlist）：期權分析 + 美股ORB 共用同一組型別/回應格式
 // （後端 WatchlistResponse），美股ORB額外多一個 BingX 目錄搜尋回應。
 // ---------------------------------------------------------------------------

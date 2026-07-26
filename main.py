@@ -89,6 +89,7 @@ from pydantic import BaseModel
 
 import gex_engine
 import yfinance as yf
+import options_strategy_engine
 import yfinance_client
 
 # ---------------------------------------------------------------------------
@@ -367,6 +368,14 @@ OPTIONS_UNDERLYINGS: Dict[str, str] = {
 
 OPTIONS_SCAN_INTERVAL_SECONDS = 60   # 美股盤中每分鐘重新拉一次期權鏈（OI本身是每日快照，但用即時現貨價重算Gamma仍會變動）
 OPTIONS_CLOSED_POLL_SECONDS = 600    # 非交易時段時，多久檢查一次「開盤了沒」
+
+# 🎯 期權賣方價差策略（Vertical Spread）：跟GEX模塊要的「最近到期日」需求不同
+# （見 yfinance_client.get_expiry_by_dte 說明），賣方策略要30-45天左右的到期日
+# 才有足夠時間價值可以收，太近權利金太薄、太遠時間效率差。這支功能是每次查詢
+# 即時向yfinance拉最新報價（不像GEX是背景輪詢+快取），所以不用另外存state。
+OPTIONS_STRATEGY_MIN_DTE = 21
+OPTIONS_STRATEGY_MAX_DTE = 50
+OPTIONS_STRATEGY_TARGET_DTE = 35
 
 # 期權大單即時流（見 POST /api/us/whale-sweep）目前只涵蓋使用者本機
 # moomoo_whale_sweep_local.py 這支腳本裡手動訂閱的標的——那支腳本是純本機
@@ -686,6 +695,42 @@ class OptionsGexListResponse(BaseModel):
     data_source_ok: bool  # 最近一次拉取是否至少有一檔標的成功；不是「連線中」概念（yfinance 沒有常駐連線）
     moomoo_online: bool = False  # 本機 Moomoo Whale Sweep 心跳狀態；見 MOOMOO_ONLINE_TIMEOUT_SECONDS 說明
     updated_at: Optional[str] = None
+
+
+class OptionStrategyLegResponse(BaseModel):
+    action: Literal["SELL", "BUY"]
+    option_type: Literal["PUT", "CALL"]
+    strike_price: float
+    reason: str
+
+
+class OptionStrategyFinancials(BaseModel):
+    max_margin_required: float
+    max_profit: float
+    max_loss: float
+    risk_reward_ratio: str
+
+
+class OptionStrategyDetail(BaseModel):
+    name: str
+    type: Literal["put_credit", "call_credit", "iron_condor"]
+    win_rate_estimate: str  # 區間字串（如"70-80%"），見 options_strategy_engine.py 說明：Delta理論估算非backtest統計值
+    expiration_date: str
+    legs: List[OptionStrategyLegResponse]
+    financials: OptionStrategyFinancials
+    ai_advice: str
+
+
+class OptionStrategyResponse(BaseModel):
+    symbol: str
+    current_price: float
+    market_sentiment: str
+    strategy: Optional[OptionStrategyDetail] = None
+    message: Optional[str] = None  # strategy為None時說明原因（流動性不足/找不到合適履約價等）
+    win_rate_disclaimer: str = (
+        "理論勝率為Black-Scholes Delta估算的機率OTM，屬於業界常見估算方法（如tastytrade的Probability "
+        "of Profit），不是回測驗證過的實際統計勝率，僅供參考。"
+    )
 
 
 class WhaleSweepItem(BaseModel):
@@ -5348,6 +5393,74 @@ async def get_options_gex() -> OptionsGexListResponse:
         underlyings=underlyings, data_source_ok=data_source_ok, moomoo_online=moomoo_online,
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.get("/api/options/strategy", response_model=OptionStrategyResponse)
+async def get_options_strategy(
+    symbol: str, sentiment: Literal["bullish", "bearish", "neutral"], sentiment_label: Optional[str] = None,
+) -> OptionStrategyResponse:
+    """
+    🎯 期權賣方價差策略（獨立、實驗性模塊，2026-07-26新增）：sentiment 由前端
+    confluence engine（lib/confluence.ts 的 calculateMarketTrend）判斷後傳入，
+    這支端點只負責「用真實期權鏈報價算出實際能下單的價差組合」，不重複判斷
+    方向——bullish→Bull Put Spread，bearish→Bear Call Spread，
+    neutral→Iron Condor。範圍限定在期權分析關注清單內的標的（跟GEX同一份
+    清單），因為只有這些標的yfinance查得到期權鏈。sentiment_label是給前端
+    直接回顯用的中文標籤（如"強烈看多"），不影響策略選擇邏輯。
+    """
+    symbol = symbol.strip().upper()
+    async with state.lock:
+        allowed = {s.upper() for s in state.options_watchlist.values()}
+    if symbol not in allowed:
+        raise HTTPException(status_code=400, detail=f"{symbol} 不在期權分析關注清單內，請先在期權分析分頁加入這檔標的")
+
+    display_sentiment = sentiment_label or {"bullish": "看漲", "bearish": "看跌", "neutral": "震盪"}[sentiment]
+
+    spot = await yfinance_client.get_spot_price(symbol)
+    if spot is None:
+        return OptionStrategyResponse(symbol=symbol, current_price=0.0, market_sentiment=display_sentiment, message="無法取得現貨價，請稍後再試")
+
+    expiry = await yfinance_client.get_expiry_by_dte(
+        symbol, min_days=OPTIONS_STRATEGY_MIN_DTE, max_days=OPTIONS_STRATEGY_MAX_DTE, target_days=OPTIONS_STRATEGY_TARGET_DTE,
+    )
+    if expiry is None:
+        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, message="找不到合適到期日的期權鏈")
+
+    legs = await yfinance_client.get_option_chain_legs(symbol, expiry)
+    if not legs:
+        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, message="查無期權鏈資料")
+
+    time_to_expiry_years = (datetime.strptime(expiry, "%Y-%m-%d").date() - datetime.now().date()).days / 365.0
+
+    if sentiment == "bullish":
+        result = options_strategy_engine.build_credit_spread(legs, spot, "put", time_to_expiry_years)
+    elif sentiment == "bearish":
+        result = options_strategy_engine.build_credit_spread(legs, spot, "call", time_to_expiry_years)
+    else:
+        result = options_strategy_engine.build_iron_condor(legs, spot, time_to_expiry_years)
+
+    if result is None:
+        return OptionStrategyResponse(
+            symbol=symbol, current_price=spot, market_sentiment=display_sentiment,
+            message="目前期權鏈流動性不足，或找不到符合安全墊範圍（現價8%~15%）的履約價，暫無建議",
+        )
+
+    strategy = OptionStrategyDetail(
+        name=result.name,
+        type=result.spread_type,
+        win_rate_estimate=result.win_rate_bucket,
+        expiration_date=expiry,
+        legs=[
+            OptionStrategyLegResponse(action=leg.action, option_type=leg.option_type, strike_price=leg.strike_price, reason=leg.reason)
+            for leg in result.legs
+        ],
+        financials=OptionStrategyFinancials(
+            max_margin_required=result.margin_required, max_profit=result.max_profit,
+            max_loss=result.max_loss, risk_reward_ratio=result.risk_reward_ratio,
+        ),
+        ai_advice=result.ai_advice,
+    )
+    return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, strategy=strategy)
 
 
 @app.get("/api/options/watchlist", response_model=WatchlistResponse)

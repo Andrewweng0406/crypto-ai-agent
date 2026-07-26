@@ -55,6 +55,51 @@ class OptionLegRaw:
     call_iv: float
     put_oi: float
     put_iv: float
+    call_bid: float = 0.0
+    call_ask: float = 0.0
+    put_bid: float = 0.0
+    put_ask: float = 0.0
+
+
+async def get_expiry_by_dte(ticker_symbol: str, min_days: int, max_days: int, target_days: int) -> Optional[str]:
+    """
+    2026-07-26新增：給期權價差策略引擎用——GEX模塊要的是「最近到期日」（gamma
+    曝險看當下最活躍的合約），但賣方價差策略要的是30-45天左右的到期日（太近
+    權利金太薄、太遠時間效率差），兩者需求不同，不能共用 get_nearest_expiry()。
+    在 [min_days, max_days] 範圍內找最接近 target_days 的到期日；範圍內沒有
+    的話，退而求其次選整個未來到期日清單裡最接近 target_days 的那個（例如
+    小型股常常只有月選擇權、剛好卡在範圍外一點點），完全沒有到期日才回傳
+    None。
+    """
+    def _fetch() -> tuple:
+        return yf.Ticker(ticker_symbol).options
+
+    try:
+        expiries = await asyncio.to_thread(_fetch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("查詢 %s 到期日清單失敗：%s", ticker_symbol, exc)
+        return None
+
+    if not expiries:
+        return None
+
+    today = datetime.now().date()
+    candidates = []
+    for e in expiries:
+        try:
+            dte = (datetime.strptime(e, "%Y-%m-%d").date() - today).days
+        except ValueError:
+            continue
+        if dte > 0:
+            candidates.append((e, dte))
+
+    if not candidates:
+        return None
+
+    in_range = [c for c in candidates if min_days <= c[1] <= max_days]
+    pool = in_range if in_range else candidates
+    best = min(pool, key=lambda c: abs(c[1] - target_days))
+    return best[0]
 
 
 async def get_nearest_expiry(ticker_symbol: str) -> Optional[str]:
@@ -138,12 +183,22 @@ async def get_option_chain_legs(ticker_symbol: str, expiry: str) -> list[OptionL
             )
             oi = _clean(row.get("openInterest"))
             iv = _clean(row.get("impliedVolatility"), sane_max=IV_SANE_MAX, sane_min=IV_SANE_MIN)
+            # bid/ask 給期權價差策略引擎算真實權利金用（見 options_strategy_engine.py）；
+            # GEX計算本身用不到這兩個欄位，只是跟OI/IV共用同一次期權鏈查詢，不用
+            # 再多打一次yfinance。沒有sane_min/max限制——0代表這檔合約完全沒人
+            # 報價（無流動性），呼叫端本來就要看到真實的0，不是被清成別的值。
+            bid = _clean(row.get("bid"))
+            ask = _clean(row.get("ask"))
             if is_call:
                 leg.call_oi = oi
                 leg.call_iv = iv
+                leg.call_bid = bid
+                leg.call_ask = ask
             else:
                 leg.put_oi = oi
                 leg.put_iv = iv
+                leg.put_bid = bid
+                leg.put_ask = ask
 
     _apply(chain.calls, is_call=True)
     _apply(chain.puts, is_call=False)
