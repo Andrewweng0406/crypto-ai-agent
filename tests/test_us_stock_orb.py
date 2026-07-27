@@ -15,7 +15,7 @@ TZ = ZoneInfo(US_MARKET_TZ)
 
 def test_long_stop_loss_is_opening_range_low():
     candidate = {"side": "Long", "entry_price": 410.0, "opening_high": 420.0, "opening_low": 400.0}
-    opened = build_us_stock_open_signal("TSLA", "NCSKTSLA2USD/USDT:USDT", candidate)
+    opened = build_us_stock_open_signal("TSLA", "TSLA", candidate)
     assert opened["stop_loss"] == 400.0
     sl_distance = opened["entry_price"] - opened["stop_loss"]
     assert opened["take_profit"] == opened["entry_price"] + sl_distance * ORB_RISK_REWARD_RATIO
@@ -27,7 +27,7 @@ def test_short_stop_loss_uses_day_high_when_higher_than_range_mid():
         "side": "Short", "entry_price": 395.0, "opening_high": 420.0, "opening_low": 400.0,
         "day_high_so_far": 425.0,
     }
-    opened = build_us_stock_open_signal("TSLA", "NCSKTSLA2USD/USDT:USDT", candidate)
+    opened = build_us_stock_open_signal("TSLA", "TSLA", candidate)
     assert opened["stop_loss"] == 425.0
 
 
@@ -37,13 +37,13 @@ def test_short_stop_loss_uses_range_mid_when_day_high_lower():
         "side": "Short", "entry_price": 395.0, "opening_high": 420.0, "opening_low": 400.0,
         "day_high_so_far": 405.0,
     }
-    opened = build_us_stock_open_signal("TSLA", "NCSKTSLA2USD/USDT:USDT", candidate)
+    opened = build_us_stock_open_signal("TSLA", "TSLA", candidate)
     assert opened["stop_loss"] == 410.0
 
 
 def test_short_without_day_high_so_far_falls_back_to_opening_high():
     candidate = {"side": "Short", "entry_price": 395.0, "opening_high": 420.0, "opening_low": 400.0}
-    opened = build_us_stock_open_signal("TSLA", "NCSKTSLA2USD/USDT:USDT", candidate)
+    opened = build_us_stock_open_signal("TSLA", "TSLA", candidate)
     assert opened["stop_loss"] == 420.0
 
 

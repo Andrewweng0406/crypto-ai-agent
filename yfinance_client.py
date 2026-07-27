@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger("trading_signal")
@@ -204,3 +205,82 @@ async def get_option_chain_legs(ticker_symbol: str, expiry: str) -> list[OptionL
     _apply(chain.puts, is_call=False)
 
     return list(legs_by_strike.values())
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-27新增：美股ORB當沖模塊的資料源，原本接BingX代幣化股票永續合約
+# （ccxt），改接這裡——理由跟GEX/RSI2一路以來的選擇一致：ORB背景迴圈要在
+# Railway上自動跑（使用者電腦不用開著），BingX代幣化商品其實是「合成」報價
+# （不是真正股票交易所），而moomoo雖然是真實券商報價，但需要本機OpenD橋接，
+# 會讓這個目前完全自動化的功能變成「使用者電腦要開著才會動」，是明顯的
+# 可靠性倒退。15分鐘K棒 + 批次現價這兩個需求yfinance本來就有現成介面，
+# 不需要引入新的資料源依賴。
+# ---------------------------------------------------------------------------
+
+async def get_intraday_ohlcv(ticker_symbol: str, interval: str, period: str) -> pd.DataFrame:
+    """
+    回傳欄位/型別跟原本 ccxt fetch_ohlcv_for_symbol() 完全一致（timestamp 為UTC
+    毫秒整數、欄名小寫 open/high/low/close/volume），刻意對齊是為了讓
+    scan_us_stock_orb() 的下游ORB邏輯（開盤區間判斷、RVOL計算）完全不用改
+    ——只有「怎麼把K線抓進來」這一段換掉。最後一根一律砍掉（比照ccxt版本的
+    「進行中K棒」慣例），呼叫端不用再自己判斷這根收盤了沒。
+    """
+    def _fetch() -> pd.DataFrame:
+        return yf.Ticker(ticker_symbol).history(period=period, interval=interval)
+
+    try:
+        raw = await asyncio.to_thread(_fetch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("查詢 %s 分鐘K線失敗：%s", ticker_symbol, exc)
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    if raw.empty:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    df = pd.DataFrame({
+        "timestamp": (raw.index.view("int64") // 1_000_000),  # ns -> ms，對齊ccxt的timestamp單位
+        "open": raw["Open"].values,
+        "high": raw["High"].values,
+        "low": raw["Low"].values,
+        "close": raw["Close"].values,
+        "volume": raw["Volume"].values,
+    })
+    return df.iloc[:-1].reset_index(drop=True)
+
+
+async def get_batch_spot_prices(ticker_symbols: list[str]) -> dict[str, float]:
+    """
+    一次批次抓取多檔標的的現價（單一HTTP請求，比對ccxt fetch_tickers_batch()
+    的「一次呼叫換多檔報價」精神），供美股ORB的TP/SL即時監控迴圈用。抓不到
+    的標的（代號無效、剛好沒有當天資料）直接從回傳字典裡省略，呼叫端本來就
+    是逐檔處理、缺一檔不影響其他檔。
+    """
+    if not ticker_symbols:
+        return {}
+
+    def _fetch() -> pd.DataFrame:
+        return yf.download(
+            tickers=" ".join(ticker_symbols), period="1d", interval="1m",
+            group_by="ticker", progress=False, threads=True,
+        )
+
+    try:
+        data = await asyncio.to_thread(_fetch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("批次查詢現價失敗（%d檔）：%s", len(ticker_symbols), exc)
+        return {}
+
+    if data.empty:
+        return {}
+
+    prices: dict[str, float] = {}
+    for symbol in ticker_symbols:
+        try:
+            # 單一標的時 yf.download 不會建立 MultiIndex 欄位，兩種情況都要接住
+            series = data[symbol]["Close"] if len(ticker_symbols) > 1 else data["Close"]
+            last_valid = series.dropna()
+            if not last_valid.empty:
+                prices[symbol] = float(last_valid.iloc[-1])
+        except (KeyError, IndexError):
+            continue
+    return prices

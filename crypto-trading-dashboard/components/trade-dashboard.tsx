@@ -666,8 +666,7 @@ export function TradeDashboard() {
           <WatchlistEditor
             watchlistUrl="/api/us-stock/watchlist"
             dataUrl="/api/us-stock-orb"
-            catalogUrl="/api/us-stock/catalog"
-            placeholder="搜尋 BingX 代幣化美股/指數，例如 AAPL"
+            placeholder="輸入美股代號，例如 AAPL"
             maxSize={30}
           />
 

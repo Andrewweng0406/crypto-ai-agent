@@ -1552,13 +1552,15 @@ export interface BackendOptionStrategyDetail {
   // 只有 iron_condor 會有值：兩腳「各自」的存活機率，win_rate_estimate 才是兩腳都不破
   // 的聯合機率（一定比這兩個數字都低）——分開存放避免前端把單腳存活率當成整體勝率。
   leg_win_rates: { put: string; call: string } | null
+  // 2026-07-27新增：是否為目前sentiment對應的那一種策略，三種都回傳、只有一種會是true
+  is_recommended: boolean
 }
 
 export interface BackendOptionStrategyResponse {
   symbol: string
   current_price: number
   market_sentiment: string
-  strategy: BackendOptionStrategyDetail | null
+  strategies: BackendOptionStrategyDetail[]
   message: string | null
   win_rate_disclaimer: string
 }
@@ -1584,13 +1586,14 @@ export interface OptionStrategyDetail {
   }
   aiAdvice: string
   legWinRates: { put: string; call: string } | null
+  isRecommended: boolean
 }
 
 export interface OptionStrategyResult {
   symbol: string
   currentPrice: number
   marketSentiment: string
-  strategy: OptionStrategyDetail | null
+  strategies: OptionStrategyDetail[]
   message: string | null
   winRateDisclaimer: string
 }
@@ -1602,28 +1605,27 @@ export function adaptOptionStrategy(raw: BackendOptionStrategyResponse): OptionS
     marketSentiment: raw.market_sentiment,
     message: raw.message,
     winRateDisclaimer: raw.win_rate_disclaimer,
-    strategy: raw.strategy
-      ? {
-          name: raw.strategy.name,
-          type: raw.strategy.type,
-          winRateEstimate: raw.strategy.win_rate_estimate,
-          expirationDate: raw.strategy.expiration_date,
-          legs: raw.strategy.legs.map((l) => ({
-            action: l.action,
-            optionType: l.option_type,
-            strikePrice: l.strike_price,
-            reason: l.reason,
-          })),
-          financials: {
-            maxMarginRequired: raw.strategy.financials.max_margin_required,
-            maxProfit: raw.strategy.financials.max_profit,
-            maxLoss: raw.strategy.financials.max_loss,
-            riskRewardRatio: raw.strategy.financials.risk_reward_ratio,
-          },
-          aiAdvice: raw.strategy.ai_advice,
-          legWinRates: raw.strategy.leg_win_rates,
-        }
-      : null,
+    strategies: raw.strategies.map((s) => ({
+      name: s.name,
+      type: s.type,
+      winRateEstimate: s.win_rate_estimate,
+      expirationDate: s.expiration_date,
+      legs: s.legs.map((l) => ({
+        action: l.action,
+        optionType: l.option_type,
+        strikePrice: l.strike_price,
+        reason: l.reason,
+      })),
+      financials: {
+        maxMarginRequired: s.financials.max_margin_required,
+        maxProfit: s.financials.max_profit,
+        maxLoss: s.financials.max_loss,
+        riskRewardRatio: s.financials.risk_reward_ratio,
+      },
+      aiAdvice: s.ai_advice,
+      legWinRates: s.leg_win_rates,
+      isRecommended: s.is_recommended,
+    })),
   }
 }
 

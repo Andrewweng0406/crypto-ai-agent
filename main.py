@@ -290,25 +290,34 @@ AGGREGATED_OI_CIRCUIT_BREAKER_THRESHOLD = 2  # 同一輪掃描內連續失敗達
 # 標的是 BingX 的代幣化美股永續合約商品（NCSK 開頭），24 小時都能報價，
 # 但 ORB 策略邏輯只在真正的美股交易時段內運作。
 # 這份字典現在只當「伺服器全新啟動、還沒有快照」時的預設種子清單使用——實際
+# 2026-07-27改接yfinance（原本是BingX代幣化股票永續合約，見yfinance_client.py
+# 檔頭新增的說明）：display_name -> yfinance代號，跟 OPTIONS_UNDERLYINGS 一樣
+# key==value（yfinance沒有「代號」跟「顯示名稱」的區分）。
 # 運作中的清單是 state.us_stock_watchlist（動態、使用者可增刪，見該欄位定義處
 # 說明），所有背景迴圈/端點都改讀 state.us_stock_watchlist，不再直接讀這個常數。
 US_STOCK_SYMBOLS: Dict[str, str] = {
-    "TSLA": "NCSKTSLA2USD/USDT:USDT",
-    "NVDA": "NCSKNVDA2USD/USDT:USDT",
-    "MSTR": "NCSKMSTR2USD/USDT:USDT",
-    "SOXL": "NCSKSOXL2USD/USDT:USDT",
-    "TQQQ": "NCSKTQQQ2USD/USDT:USDT",
+    "TSLA": "TSLA",
+    "NVDA": "NVDA",
+    "MSTR": "MSTR",
+    "SOXL": "SOXL",
+    "TQQQ": "TQQQ",
 }
 
-# 大盤濾網參考指數：那斯達克100代幣化指數商品（TQQQ/SOXL/NVDA 這幾檔跟科技股
-# 大盤連動性高，用這個當代表；之後想換 SP500 只要改這個常數即可）
-US_STOCK_REGIME_SYMBOL = "NCSINASDAQ1002USD/USDT:USDT"
+# 大盤濾網參考指數：改用 QQQ（那斯達克100 ETF，yfinance資料穩定、流動性高），
+# 取代原本的BingX代幣化指數商品；TQQQ/SOXL/NVDA這幾檔跟科技股大盤連動性高，
+# 用QQQ當代表一樣合理，之後想換SPY只要改這個常數即可。
+US_STOCK_REGIME_SYMBOL = "QQQ"
 
 US_STOCK_TIMEFRAME = "15m"
-US_STOCK_TICKER_INTERVAL_SECONDS = 2     # 現價刷新頻率（秒）——當沖需要盯緊 TP/SL
-US_STOCK_SCAN_INTERVAL_SECONDS = 60      # K線 + ORB 策略偵測頻率：15m線沒必要每2秒重算一次
+# 2026-07-27：從2秒放慢到15秒——原本2秒是ccxt/BingX的cadence，一次批次呼叫
+# 換全部標的現價，對交易所而言毫無負擔；yfinance沒有官方文件保證的速率限制，
+# 社群共識是「不要打得太兇」，2秒對6檔標的持續6.75小時等於全天兩萬多次請求，
+# 風險太高。15秒對日內當沖TP/SL監控仍然夠即時（比RSI2用日線判斷細得多），
+# 但請求量降到安全範圍。
+US_STOCK_TICKER_INTERVAL_SECONDS = 15
+US_STOCK_SCAN_INTERVAL_SECONDS = 60      # K線 + ORB 策略偵測頻率：15m線沒必要每15秒重算一次
 US_STOCK_CLOSED_POLL_SECONDS = 300       # 非交易時段時，多久檢查一次「開盤了沒」
-US_STOCK_OHLCV_LIMIT = 1000              # 約可抓到 10 天份 15m K線，供 RVOL 用「過去N個交易日同一時段」比較
+US_STOCK_OHLCV_PERIOD = "10d"            # yfinance用period不是根數；10天遠超過ORB_RVOL_LOOKBACK_DAYS(5)+今天所需
 
 US_MARKET_TZ = "America/New_York"
 US_MARKET_OPEN = dt_time(9, 15)   # 背景迴圈的活動窗口（開盤前先暖機），不是正式開盤時間
@@ -725,14 +734,22 @@ class OptionStrategyDetail(BaseModel):
     # 跟 win_rate_estimate（兩腳都不破的聯合機率，一定比這兩個數字都低）分開顯示，避免使用者
     # 把單腳存活率誤看成整個策略的勝率（2026-07-26使用者實測時發現這個混淆點）。
     leg_win_rates: Optional[dict] = None
+    # 2026-07-27新增：是否為目前sentiment（confluence判斷）對應的那一種策略——
+    # 三種都算給你看，但只有一種是「現在這個當下」最適合的，前端用這個欄位
+    # 決定要不要加強調樣式，不用再回頭比對type字串。
+    is_recommended: bool = False
 
 
 class OptionStrategyResponse(BaseModel):
     symbol: str
     current_price: float
     market_sentiment: str
-    strategy: Optional[OptionStrategyDetail] = None
-    message: Optional[str] = None  # strategy為None時說明原因（流動性不足/找不到合適履約價等）
+    # 2026-07-27改為一次回傳三種策略（Bull Put/Bear Call/Iron Condor 都算），
+    # 不再只回傳sentiment對應的單一策略——使用者可以看到全貌，自己決定要哪個，
+    # 不是只能被動接受系統當下判斷的那一種。is_recommended標記目前sentiment
+    # 對應的那個。空陣列代表三種都因為流動性不足/找不到合適履約價而失敗。
+    strategies: List[OptionStrategyDetail] = []
+    message: Optional[str] = None  # strategies為空陣列時說明原因
     win_rate_disclaimer: str = (
         "理論勝率為Black-Scholes Delta估算的機率OTM，屬於業界常見估算方法（如tastytrade的Probability "
         "of Profit），不是回測驗證過的實際統計勝率，僅供參考。"
@@ -2070,19 +2087,17 @@ def _is_us_market_active(now_et: datetime) -> bool:
     return US_MARKET_OPEN <= now_et.time() <= US_MARKET_CLOSE
 
 
-async def refresh_us_market_regime(exchange_pool: dict) -> None:
+async def refresh_us_market_regime() -> None:
     """
-    大盤濾網：抓大盤指數（預設那斯達克100代幣化商品）的 15m K 線，用短/長均線
-    交叉判斷趨勢，或用「是否突破前一根K棒高低點」當輔助訊號，兩者任一成立即可
-    判定方向；兩者矛盾時視為中性。這是策略濾網用的簡化定義，不是嚴謹的大盤
-    強弱指標，跟主流幣策略的雙均線濾網是同樣的簡化精神。
+    大盤濾網：抓大盤指數（預設 QQQ）的 15m K 線，用短/長均線交叉判斷趨勢，或用
+    「是否突破前一根K棒高低點」當輔助訊號，兩者任一成立即可判定方向；兩者矛盾
+    時視為中性。這是策略濾網用的簡化定義，不是嚴謹的大盤強弱指標，跟主流幣
+    策略的雙均線濾網是同樣的簡化精神。
     """
-    try:
-        df = await fetch_ohlcv_for_symbol(
-            exchange_pool, US_STOCK_REGIME_SYMBOL, timeframe=US_STOCK_TIMEFRAME, limit=60
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("大盤濾網K線抓取失敗：%s", exc)
+    df = await yfinance_client.get_intraday_ohlcv(
+        US_STOCK_REGIME_SYMBOL, interval=US_STOCK_TIMEFRAME, period=US_STOCK_OHLCV_PERIOD
+    )
+    if df.empty:
         return
 
     if len(df) < 22:
@@ -2149,7 +2164,7 @@ def build_us_stock_open_signal(display_name: str, ticker_symbol: str, candidate:
     }
 
 
-async def scan_us_stock_orb(exchange_pool: dict, display_name: str, ticker_symbol: str) -> None:
+async def scan_us_stock_orb(display_name: str, ticker_symbol: str) -> None:
     """
     單一美股代幣化商品的 ORB（Opening Range Breakout）偵測：
       1. 鎖定當天開盤區間（美東 09:30-09:45，15m線的第一根收盤K棒）的高/低點。
@@ -2165,14 +2180,9 @@ async def scan_us_stock_orb(exchange_pool: dict, display_name: str, ticker_symbo
         if st.open_signal is not None:
             return  # 已有部位，TP/SL 由 ticker 迴圈另外監控，這裡不重複偵測新訊號
 
-    try:
-        df = await fetch_ohlcv_for_symbol(
-            exchange_pool, ticker_symbol, timeframe=US_STOCK_TIMEFRAME, limit=US_STOCK_OHLCV_LIMIT
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("美股K線抓取失敗（%s）：%s", display_name, exc)
-        return
-
+    df = await yfinance_client.get_intraday_ohlcv(
+        ticker_symbol, interval=US_STOCK_TIMEFRAME, period=US_STOCK_OHLCV_PERIOD
+    )
     if df.empty:
         return
 
@@ -2382,7 +2392,7 @@ async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) 
     )
 
 
-async def flatten_all_us_stock_positions(exchange_pool: dict) -> None:
+async def flatten_all_us_stock_positions() -> None:
     """
     收盤瞬間對所有還有部位的標的做一次批次強制平倉，見 force_close_us_stock_signal。
     故意掃「所有目前有狀態的標的」而不是「目前關注清單」——使用者可能在部位開著
@@ -2395,10 +2405,9 @@ async def flatten_all_us_stock_positions(exchange_pool: dict) -> None:
     if not open_symbols:
         return
 
-    try:
-        prices = await fetch_tickers_batch(exchange_pool, open_symbols)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("收盤強制平倉時抓取價格失敗，這些部位將留到下次抓得到報價才平倉：%s", exc)
+    prices = await yfinance_client.get_batch_spot_prices(open_symbols)
+    if not prices:
+        logger.error("收盤強制平倉時抓取價格失敗，這些部位將留到下次抓得到報價才平倉")
         return
 
     notifications: List[str] = []
@@ -2412,13 +2421,13 @@ async def flatten_all_us_stock_positions(exchange_pool: dict) -> None:
         await send_telegram_message(notification)
 
 
-async def us_stock_orb_loop(exchange_pool: dict) -> None:
+async def us_stock_orb_loop() -> None:
     """
     美股 ORB 背景迴圈：獨立於主流幣/迷因幣共用的 price_monitor_loop，只在美股交易
     時段（美東 09:15-16:00、週一到週五）才運作，其餘時間睡眠、不打任何 API。
     現價每 US_STOCK_TICKER_INTERVAL_SECONDS 秒刷新一次（驅動 TP/SL 監控），
     K線+ORB策略偵測每 US_STOCK_SCAN_INTERVAL_SECONDS 秒才跑一次（15m線沒必要
-    每2秒重算），任何例外都會被記錄下來但不中斷這支迴圈。
+    每15秒重算），任何例外都會被記錄下來但不中斷這支迴圈。
 
     當沖規則：休市時這支迴圈整個睡眠、完全不會監控價格，所以一旦偵測到「剛從
     開盤轉成休市」，會先強制平倉所有還沒結算的部位（見 flatten_all_us_stock_
@@ -2440,7 +2449,7 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
 
             if not is_active:
                 if was_active:
-                    await flatten_all_us_stock_positions(exchange_pool)
+                    await flatten_all_us_stock_positions()
                 was_active = False
                 await asyncio.sleep(US_STOCK_CLOSED_POLL_SECONDS)
                 continue
@@ -2448,11 +2457,7 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
             was_active = True
             watchlist_snapshot = dict(state.us_stock_watchlist)
             symbols = list(watchlist_snapshot.values())
-            try:
-                prices = await fetch_tickers_batch(exchange_pool, symbols)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("美股批次抓取即時價格失敗：%s", exc)
-                prices = {}
+            prices = await yfinance_client.get_batch_spot_prices(symbols)
 
             now_iso = datetime.now(timezone.utc).isoformat()
             settlement_notifications: List[str] = []
@@ -2470,9 +2475,9 @@ async def us_stock_orb_loop(exchange_pool: dict) -> None:
 
             now_monotonic = time.monotonic()
             if now_monotonic - last_scan_at >= US_STOCK_SCAN_INTERVAL_SECONDS:
-                await refresh_us_market_regime(exchange_pool)
+                await refresh_us_market_regime()
                 for display_name, ticker_symbol in watchlist_snapshot.items():
-                    await scan_us_stock_orb(exchange_pool, display_name, ticker_symbol)
+                    await scan_us_stock_orb(display_name, ticker_symbol)
                 last_scan_at = now_monotonic
 
             failure_notification = _record_loop_outcome("美股 ORB 迴圈", success=True)
@@ -4226,7 +4231,15 @@ def load_state_snapshot() -> None:
         if snapshot.get("options_watchlist"):
             state.options_watchlist = snapshot["options_watchlist"]
         if snapshot.get("us_stock_watchlist"):
-            state.us_stock_watchlist = snapshot["us_stock_watchlist"]
+            # 2026-07-27一次性遷移：美股ORB資料源從BingX代幣化商品改接yfinance
+            # 前，這個字典存的是 display_name -> BingX永續合約符號（例如
+            # "TSLA": "NCSKTSLA2USD/USDT:USDT"）；新格式跟期權分析一樣是
+            # key==value的yfinance代號。舊格式的value含有"/"（BingX symbol
+            # 一定有這個字元，真正的股票代號不會），偵測到就直接改成
+            # display_name本身，不需要使用者手動重加一次自選清單。
+            state.us_stock_watchlist = {
+                k: (k if "/" in v else v) for k, v in snapshot["us_stock_watchlist"].items()
+            }
 
         for symbol, data in snapshot.get("rsi2_states", {}).items():
             rsi2_st = state.get_rsi2_state(symbol)
@@ -5004,45 +5017,7 @@ class WatchlistResponse(BaseModel):
 
 
 class WatchlistAddRequest(BaseModel):
-    ticker: str  # 期權：yfinance美股代號；美股ORB：BingX目錄的display_name（例如"AAPL"）
-
-
-class BingxStockCatalogItem(BaseModel):
-    display_name: str
-    symbol: str
-
-
-class BingxStockCatalogResponse(BaseModel):
-    items: List[BingxStockCatalogItem]
-    total: int
-
-
-def _parse_bingx_stock_display_name(symbol: str) -> Optional[str]:
-    """從 'NCSKAAPL2USD/USDT:USDT' 或 'NCSINASDAQ1002USD/USDT:USDT' 解析出人類看得懂的代號，例如 'AAPL'。"""
-    base = symbol.split("/")[0]
-    for prefix in ("NCSK", "NCSI"):
-        if base.startswith(prefix) and base.endswith("2USD"):
-            return base[len(prefix):-len("2USD")]
-    return None
-
-
-def bingx_stock_catalog() -> Dict[str, str]:
-    """
-    從已於 lifespan 啟動時 load_markets() 過的 BingX 市場資料裡即時篩出代幣化
-    美股/指數商品，display_name -> bingx symbol。不額外打API，純記憶體篩選，
-    所以不需要另外開一個背景刷新迴圈——跟交易所本身的 exchange.markets 一樣新鮮。
-    """
-    exchange = exchange_pool_ref.get("bingx")
-    if exchange is None or not getattr(exchange, "markets", None):
-        return {}
-    catalog: Dict[str, str] = {}
-    for symbol, market in exchange.markets.items():
-        if not market.get("swap"):
-            continue
-        display_name = _parse_bingx_stock_display_name(symbol)
-        if display_name:
-            catalog[display_name] = symbol
-    return catalog
+    ticker: str  # yfinance美股代號（期權分析、美股ORB共用同一種格式，2026-07-27起）
 
 
 # ---------------------------------------------------------------------------
@@ -5073,7 +5048,7 @@ async def lifespan(app: FastAPI):
         TICK_INTERVAL_SECONDS,
     )
 
-    us_stock_task = asyncio.create_task(us_stock_orb_loop(exchange_pool))
+    us_stock_task = asyncio.create_task(us_stock_orb_loop())
     logger.info(
         "美股 ORB 當沖背景迴圈已啟動（標的：%s，只在美東 %s-%s 交易時段內運作）",
         ", ".join(state.us_stock_watchlist.keys()),
@@ -5438,36 +5413,44 @@ async def get_options_strategy(
 
     time_to_expiry_years = (datetime.strptime(expiry, "%Y-%m-%d").date() - datetime.now().date()).days / 365.0
 
-    if sentiment == "bullish":
-        result = options_strategy_engine.build_credit_spread(legs, spot, "put", time_to_expiry_years)
-    elif sentiment == "bearish":
-        result = options_strategy_engine.build_credit_spread(legs, spot, "call", time_to_expiry_years)
-    else:
-        result = options_strategy_engine.build_iron_condor(legs, spot, time_to_expiry_years)
+    # 2026-07-27改為三種都算：反正都是同一份期權鏈資料，多算兩種幾乎不增加成本，
+    # 讓使用者看到完整全貌而不是只能被動接受系統當下判斷出的那一種。
+    recommended_type = {"bullish": "put_credit", "bearish": "call_credit", "neutral": "iron_condor"}[sentiment]
+    candidates: List[tuple] = [
+        ("put_credit", options_strategy_engine.build_credit_spread(legs, spot, "put", time_to_expiry_years)),
+        ("call_credit", options_strategy_engine.build_credit_spread(legs, spot, "call", time_to_expiry_years)),
+        ("iron_condor", options_strategy_engine.build_iron_condor(legs, spot, time_to_expiry_years)),
+    ]
 
-    if result is None:
+    strategies: List[OptionStrategyDetail] = []
+    for spread_type, result in candidates:
+        if result is None:
+            continue
+        strategies.append(OptionStrategyDetail(
+            name=result.name,
+            type=result.spread_type,
+            win_rate_estimate=result.win_rate_bucket,
+            expiration_date=expiry,
+            legs=[
+                OptionStrategyLegResponse(action=leg.action, option_type=leg.option_type, strike_price=leg.strike_price, reason=leg.reason)
+                for leg in result.legs
+            ],
+            financials=OptionStrategyFinancials(
+                max_margin_required=result.margin_required, max_profit=result.max_profit,
+                max_loss=result.max_loss, risk_reward_ratio=result.risk_reward_ratio,
+            ),
+            ai_advice=result.ai_advice,
+            leg_win_rates=result.leg_win_rates,
+            is_recommended=(spread_type == recommended_type),
+        ))
+
+    if not strategies:
         return OptionStrategyResponse(
             symbol=symbol, current_price=spot, market_sentiment=display_sentiment,
             message="目前期權鏈流動性不足，或找不到符合安全墊範圍（現價8%~15%）的履約價，暫無建議",
         )
 
-    strategy = OptionStrategyDetail(
-        name=result.name,
-        type=result.spread_type,
-        win_rate_estimate=result.win_rate_bucket,
-        expiration_date=expiry,
-        legs=[
-            OptionStrategyLegResponse(action=leg.action, option_type=leg.option_type, strike_price=leg.strike_price, reason=leg.reason)
-            for leg in result.legs
-        ],
-        financials=OptionStrategyFinancials(
-            max_margin_required=result.margin_required, max_profit=result.max_profit,
-            max_loss=result.max_loss, risk_reward_ratio=result.risk_reward_ratio,
-        ),
-        ai_advice=result.ai_advice,
-        leg_win_rates=result.leg_win_rates,
-    )
-    return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, strategy=strategy)
+    return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, strategies=strategies)
 
 
 @app.get("/api/options/watchlist", response_model=WatchlistResponse)
@@ -6037,19 +6020,6 @@ async def get_us_stock_history() -> USStockHistoryResponse:
     )
 
 
-@app.get("/api/us-stock/catalog", response_model=BingxStockCatalogResponse)
-async def search_us_stock_catalog(q: str = "") -> BingxStockCatalogResponse:
-    """
-    搜尋 BingX 目前實際上架的代幣化美股/指數商品（NCSK個股/NCSI指數開頭，
-    2026-07-11實測共252檔），供美股ORB自選清單的新增介面用。q 為空時回傳前
-    50 檔（依代號字母排序），避免一次吐回全部檔位洗爆前端；total 回傳完整
-    符合數量，前端可以提示「還有更多，請輸入關鍵字縮小範圍」。
-    """
-    catalog = bingx_stock_catalog()
-    query = q.strip().upper()
-    matches = sorted(name for name in catalog if not query or query in name)
-    items = [BingxStockCatalogItem(display_name=name, symbol=catalog[name]) for name in matches[:50]]
-    return BingxStockCatalogResponse(items=items, total=len(matches))
 
 
 @app.get("/api/us-stock/watchlist", response_model=WatchlistResponse)
@@ -6063,24 +6033,32 @@ async def get_us_stock_watchlist() -> WatchlistResponse:
 @app.post("/api/us-stock/watchlist", response_model=WatchlistResponse)
 async def add_us_stock_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistResponse:
     """
-    新增一檔美股ORB監控標的：只能從 BingX 目前實際上架的代幣化美股/指數目錄
-    （/api/us-stock/catalog）裡選，不像期權分析可以開放到任意代號——ORB策略
-    需要這個交易所本身真的有這檔永續合約才能報價，不是隨便一個美股代號就能加。
+    新增一檔美股ORB監控標的：2026-07-27改接yfinance後，驗證邏輯比照
+    add_options_watchlist——理論上任何yfinance查得到報價的美股代號都能加，
+    不再限制於BingX代幣化商品目錄（那份目錄跟這個資料源已經沒有關係了）。
     """
     client_ip = _watchlist_client_ip(request)
     if _watchlist_is_rate_limited(client_ip):
         raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
 
-    display_name = body.ticker.strip().upper()
-    catalog = bingx_stock_catalog()
-    if display_name not in catalog:
-        raise HTTPException(status_code=400, detail=f"「{display_name}」不在 BingX 目前上架的代幣化美股/指數清單內")
+    ticker = body.ticker.strip().upper()
+    if not ticker or not ticker.replace(".", "").replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="代號格式無效")
 
     async with state.lock:
-        already_added = display_name in state.us_stock_watchlist
+        already_added = ticker in state.us_stock_watchlist
         if not already_added and len(state.us_stock_watchlist) >= US_STOCK_WATCHLIST_MAX_SIZE:
             raise HTTPException(status_code=400, detail=f"自選清單已達上限（{US_STOCK_WATCHLIST_MAX_SIZE}檔），請先移除幾檔再新增")
-        state.us_stock_watchlist[display_name] = catalog[display_name]
+
+    if not already_added:
+        # 驗證放在鎖外面：yfinance是同步阻塞API，就算包了to_thread也可能花到
+        # 接近1秒，鎖在裡面會卡住其他所有需要state.lock的背景迴圈/端點。
+        spot = await yfinance_client.get_spot_price(ticker)
+        if spot is None:
+            raise HTTPException(status_code=400, detail=f"查不到「{ticker}」的資料，請確認代號是否正確")
+
+    async with state.lock:
+        state.us_stock_watchlist[ticker] = ticker
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
     save_state_snapshot()
     return WatchlistResponse(items=items)
