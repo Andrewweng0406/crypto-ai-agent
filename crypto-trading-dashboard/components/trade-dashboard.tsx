@@ -696,7 +696,7 @@ export function TradeDashboard() {
             <div className="flex flex-col gap-5 lg:col-span-2">
               {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal ? (
                 <>
-                  <SignalChart signal={selectedUSStock.signal} candleSymbol={selectedUSStock.symbol} timeframe="15m" />
+                  <SignalChart signal={selectedUSStock.signal} candleSymbol={selectedUSStock.symbol} timeframe="15m" market="us-stock" />
                   <PriceRangeGauge signal={selectedUSStock.signal} />
                 </>
               ) : selectedUSStock ? (
@@ -725,9 +725,9 @@ export function TradeDashboard() {
           />
 
           <p className="text-center text-xs text-muted-foreground">
-            美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，
-            <strong className="text-foreground">尚未經過回測驗證，勝率未知</strong>
-            ，標的為 BingX 代幣化美股商品，可在上方自選清單自由增刪（目前上架約252檔可選），僅在美東交易時段運作。
+            美股 ORB 當沖為獨立功能：開盤區間突破 + RVOL 過濾 + 大盤濾網，資料源為 yfinance 15 分鐘K線，
+            <strong className="text-foreground">2026-07-27實測yfinance 60天K線上限讓單一標的樣本數過少（1-6筆），統計上尚不足以驗證勝率</strong>
+            ，詳見「🚀 回測沙盒」分頁跑 us_stock_orb 策略的完整警語。可在上方自選清單自由輸入任意美股代號增刪，僅在美東交易時段運作。
           </p>
         </>
       ) : isNewsAgentMode ? (

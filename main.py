@@ -5754,10 +5754,13 @@ async def get_research_bundles() -> ResearchBundlesResponse:
 @app.get("/api/candles", response_model=CandlesListResponse)
 async def get_candles(symbol: str, limit: int = 60, timeframe: str = TIMEFRAME) -> CandlesListResponse:
     """
-    回傳指定標的最近已收盤的真實K線，供前端畫真實蠟燭圖用（取代原本 demo 用的
-    假隨機漫步資料）。跟主流幣策略共用同一支 fetch_ohlcv_for_symbol，資料來源
-    一致；不限定只能查 MAJOR_SYMBOLS，市場掃描/迷因幣/美股ORB的標的也能查
-    （美股 ORB 前端應傳 timeframe=15m，對齊策略本身用的K線週期）。
+    回傳指定「加密貨幣/BingX永續合約」標的最近已收盤的真實K線，供前端畫真實
+    蠟燭圖用。跟主流幣策略共用同一支 fetch_ohlcv_for_symbol，資料來源一致；
+    不限定只能查 MAJOR_SYMBOLS，市場掃描/迷因幣的標的也能查。
+
+    ⚠️ 2026-07-27起美股ORB已改接yfinance（見 US_STOCK_SYMBOLS 說明），symbol
+    傳純美股代號（如"TSLA"）在這支端點會失敗——ccxt交易所不認得這種代號，
+    美股要改查下面的 /api/us-stock/candles。
     """
     limit = min(max(limit, 10), 300)
 
@@ -5779,6 +5782,48 @@ async def get_candles(symbol: str, limit: int = 60, timeframe: str = TIMEFRAME) 
             volume=float(row["volume"]),
         )
         for _, row in df.iterrows()
+    ]
+
+    return CandlesListResponse(symbol=symbol, timeframe=timeframe, candles=candles)
+
+
+# yfinance interval -> 對應要抓多長的period才夠湊出常見limit根數，同時不超過
+# yfinance自己對各interval的資料保留上限（15m是60天硬上限，1d基本沒限制但
+# 抓太長沒必要）。
+US_STOCK_CANDLES_PERIOD_BY_INTERVAL: Dict[str, str] = {
+    "15m": "5d", "30m": "1mo", "1h": "1mo", "1d": "3mo", "1wk": "2y",
+}
+
+
+@app.get("/api/us-stock/candles", response_model=CandlesListResponse)
+async def get_us_stock_candles(symbol: str, timeframe: str = "1d", limit: int = 60) -> CandlesListResponse:
+    """
+    回傳美股標的最近已收盤的真實K線（yfinance資料源），是 /api/candles 的
+    美股版——2026-07-27新增，修復美股ORB遷移到yfinance後 SignalChart 原本
+    靠 /api/candles(ccxt) 查美股K線會失敗的問題（ccxt交易所不認得"TSLA"這種
+    純美股代號），同時也是「個股總覽」頁K線疊圖用的資料源。
+    """
+    symbol = symbol.strip().upper()
+    if timeframe not in US_STOCK_CANDLES_PERIOD_BY_INTERVAL:
+        raise HTTPException(status_code=400, detail=f"不支援的timeframe：{timeframe}")
+    limit = min(max(limit, 10), 300)
+
+    df = await yfinance_client.get_intraday_ohlcv(
+        symbol, interval=timeframe, period=US_STOCK_CANDLES_PERIOD_BY_INTERVAL[timeframe],
+    )
+    if df.empty:
+        raise HTTPException(status_code=502, detail=f"抓取 {symbol} K線失敗，請確認代號是否正確")
+
+    candles = [
+        CandleResponse(
+            timestamp=int(row["timestamp"]),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+            volume=float(row["volume"]),
+        )
+        for _, row in df.tail(limit).iterrows()
     ]
 
     return CandlesListResponse(symbol=symbol, timeframe=timeframe, candles=candles)

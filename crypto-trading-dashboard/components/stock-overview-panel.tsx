@@ -9,6 +9,7 @@ import { ConfluenceBadge } from "@/components/confluence-badge"
 import { GexWallChart } from "@/components/gex-wall-chart"
 import { OptionStrategyCard } from "@/components/option-strategy-card"
 import { RSI2TechnicalChart } from "@/components/rsi2-technical-chart"
+import { UsStockCandlesChart } from "@/components/us-stock-candles-chart"
 import {
   adaptOptionsGexList,
   adaptRSI2Chart,
@@ -128,6 +129,8 @@ export function StockOverviewPanel() {
           <span className="text-xs text-muted-foreground">{confluence.actionAdvice}</span>
         </div>
       )}
+
+      {selected && <UsStockCandlesChart symbol={selected} />}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {orb && (

@@ -13,18 +13,22 @@ const fetcher = (url: string) =>
 
 interface SignalChartProps {
   signal: Signal
-  // ORB 面板的 signal.symbol 是給人看的乾淨代號（如 TSLA），不是後端真正的
-  // ccxt 符號，抓K線要用真正的符號；timeframe 同理（ORB 用 15m，主流幣預設4h）。
+  // candleSymbol 是後端真正拿去查K線的符號；市場掃描/迷因當沖傳的是ccxt符號，
+  // 美股ORB傳的是純美股代號（如"TSLA"）——2026-07-27美股ORB改接yfinance後，
+  // 兩者不再走同一支查詢端點，market 決定要打 /api/candles(ccxt) 還是
+  // /api/us-stock/candles(yfinance)，不能再共用一支。
   candleSymbol?: string
   timeframe?: string
+  market?: "crypto" | "us-stock"
 }
 
-export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProps) {
+export function SignalChart({ signal, candleSymbol, timeframe, market = "crypto" }: SignalChartProps) {
   const isLong = signal.side === "Long"
   const symbolForCandles = candleSymbol ?? signal.symbol
 
   const candlesQuery = new URLSearchParams({ symbol: symbolForCandles, limit: "60" })
   if (timeframe) candlesQuery.set("timeframe", timeframe)
+  const candlesUrl = market === "us-stock" ? `/api/us-stock/candles?${candlesQuery.toString()}` : `/api/candles?${candlesQuery.toString()}`
 
   // Real OHLCV from the same backend the strategy itself scans — this used to
   // be a deterministic pseudo-random walk purely for decoration; TP/SL/current
@@ -33,7 +37,7 @@ export function SignalChart({ signal, candleSymbol, timeframe }: SignalChartProp
     data: rawCandles,
     error,
     isLoading,
-  } = useSWR<BackendCandlesResponse>(`/api/candles?${candlesQuery.toString()}`, fetcher, {
+  } = useSWR<BackendCandlesResponse>(candlesUrl, fetcher, {
     refreshInterval: 60_000,
   })
 
