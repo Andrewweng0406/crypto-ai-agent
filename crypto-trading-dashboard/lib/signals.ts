@@ -1543,6 +1543,9 @@ export interface BackendOptionStrategyDetail {
   legs: BackendOptionStrategyLeg[]
   financials: BackendOptionStrategyFinancials
   ai_advice: string
+  // 只有 iron_condor 會有值：兩腳「各自」的存活機率，win_rate_estimate 才是兩腳都不破
+  // 的聯合機率（一定比這兩個數字都低）——分開存放避免前端把單腳存活率當成整體勝率。
+  leg_win_rates: { put: string; call: string } | null
 }
 
 export interface BackendOptionStrategyResponse {
@@ -1574,6 +1577,7 @@ export interface OptionStrategyDetail {
     riskRewardRatio: string
   }
   aiAdvice: string
+  legWinRates: { put: string; call: string } | null
 }
 
 export interface OptionStrategyResult {
@@ -1611,6 +1615,7 @@ export function adaptOptionStrategy(raw: BackendOptionStrategyResponse): OptionS
             riskRewardRatio: raw.strategy.financials.risk_reward_ratio,
           },
           aiAdvice: raw.strategy.ai_advice,
+          legWinRates: raw.strategy.leg_win_rates,
         }
       : null,
   }

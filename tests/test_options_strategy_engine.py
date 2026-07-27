@@ -144,3 +144,37 @@ def test_build_iron_condor_returns_none_if_either_side_fails():
     # 只給put側報價，call側完全沒流動性 -> 整個Iron Condor應該失敗，不湊殘缺的
     legs = _make_legs(put_quotes={90: (2.0, 2.2, 0.4), 85: (1.0, 1.2, 0.4)})
     assert build_iron_condor(legs, SPOT, time_to_expiry_years=30 / 365) is None
+
+
+def test_build_iron_condor_win_rate_is_joint_probability_not_either_leg():
+    # 2026-07-26修正：使用者發現原本顯示的是put/call兩腳「各自」的存活機率，
+    # 但要拿到Iron Condor的max_profit兩腳都不能被突破——正確值應該是聯合機率
+    # (put_pop + call_pop - 100)，必然比任一腳單獨的機率低，不能直接把兩個
+    # 70%-ish的字串並排顯示、讓人誤以為勝率有70%那麼高。
+    legs = _make_legs(
+        put_quotes={90: (2.0, 2.2, 0.4), 85: (1.0, 1.2, 0.4)},
+        call_quotes={110: (1.5, 1.7, 0.35), 115: (0.6, 0.8, 0.35)},
+    )
+    put_side = build_credit_spread(legs, SPOT, "put", time_to_expiry_years=30 / 365)
+    call_side = build_credit_spread(legs, SPOT, "call", time_to_expiry_years=30 / 365)
+    result = build_iron_condor(legs, SPOT, time_to_expiry_years=30 / 365)
+
+    assert result is not None
+    assert put_side.win_rate_pop is not None and call_side.win_rate_pop is not None
+    expected_combined_pop = put_side.win_rate_pop + call_side.win_rate_pop - 100.0
+    assert result.win_rate_pop == expected_combined_pop
+    # 聯合機率必須嚴格低於兩腳個別機率中較低的那一個（不會出現「組合後反而更高」這種違反邏輯的結果）
+    assert result.win_rate_pop < min(put_side.win_rate_pop, call_side.win_rate_pop)
+    # leg_win_rates 保留兩腳各自的分桶字串，供前端分開顯示、不跟組合後的win_rate_bucket混在一起
+    assert result.leg_win_rates == {"put": put_side.win_rate_bucket, "call": call_side.win_rate_bucket}
+
+
+def test_build_iron_condor_win_rate_na_when_either_leg_iv_missing():
+    legs = _make_legs(
+        put_quotes={90: (2.0, 2.2, 0.0), 85: (1.0, 1.2, 0.0)},  # IV缺失
+        call_quotes={110: (1.5, 1.7, 0.35), 115: (0.6, 0.8, 0.35)},
+    )
+    result = build_iron_condor(legs, SPOT, time_to_expiry_years=30 / 365)
+    assert result is not None
+    assert result.win_rate_bucket == "N/A"
+    assert result.win_rate_pop is None

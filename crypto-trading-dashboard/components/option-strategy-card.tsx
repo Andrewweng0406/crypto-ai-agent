@@ -118,10 +118,17 @@ function StrategyDetailView({ result }: { result: OptionStrategyResult }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-base font-semibold text-foreground">{s.name}</span>
         <span className="rounded-md bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary">
-          理論勝率 {s.winRateEstimate}
+          理論勝率（拿到最大獲利的機率）{s.winRateEstimate}
         </span>
         <span className="text-[11px] text-muted-foreground">到期日 {s.expirationDate}</span>
       </div>
+
+      {s.legWinRates && (
+        <p className="text-[11px] text-muted-foreground">
+          單腳存活率（僅供參考，不是策略勝率）：Put {s.legWinRates.put} · Call {s.legWinRates.call}
+          ——要兩腳都不破才算最大獲利，所以上面的理論勝率必然比這兩個數字都低。
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {s.legs.map((leg, i) => (

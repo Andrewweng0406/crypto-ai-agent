@@ -719,6 +719,10 @@ class OptionStrategyDetail(BaseModel):
     legs: List[OptionStrategyLegResponse]
     financials: OptionStrategyFinancials
     ai_advice: str
+    # 只有 iron_condor 會有值：{"put": "70-80%", "call": "60-70%"}——兩腳「各自」的存活機率，
+    # 跟 win_rate_estimate（兩腳都不破的聯合機率，一定比這兩個數字都低）分開顯示，避免使用者
+    # 把單腳存活率誤看成整個策略的勝率（2026-07-26使用者實測時發現這個混淆點）。
+    leg_win_rates: Optional[dict] = None
 
 
 class OptionStrategyResponse(BaseModel):
@@ -5459,6 +5463,7 @@ async def get_options_strategy(
             max_loss=result.max_loss, risk_reward_ratio=result.risk_reward_ratio,
         ),
         ai_advice=result.ai_advice,
+        leg_win_rates=result.leg_win_rates,
     )
     return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, strategy=strategy)
 

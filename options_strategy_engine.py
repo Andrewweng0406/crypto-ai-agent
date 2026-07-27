@@ -58,6 +58,8 @@ class SpreadResult:
     risk_reward_ratio: str
     win_rate_bucket: str
     ai_advice: str
+    win_rate_pop: Optional[float] = None  # 原始機率值（0~100，未分桶），Iron Condor組合兩腳時要用這個算聯合機率，不能直接拿分桶後的字串去湊
+    leg_win_rates: Optional[dict[str, str]] = None  # 只有Iron Condor會填：{"put": "70-80%", "call": "60-70%"}，單腳各自的存活機率，供前端跟組合後的win_rate_bucket分開顯示，避免混淆
 
 
 def _otm_pct(spot: float, strike: float, side: SpreadSide) -> float:
@@ -98,12 +100,17 @@ def select_credit_spread_strikes(
     return short_leg, long_leg
 
 
-def estimate_win_rate_bucket(delta: float) -> str:
-    """回傳理論勝率的10%區間字串（見檔頭說明：故意不用精確數字）。"""
-    pop_pct = (1 - abs(delta)) * 100
+def _bucket_pct(pop_pct: float) -> str:
+    """把一個0~100的機率百分比分桶成10%區間字串（見檔頭說明：故意不用精確數字）。"""
+    pop_pct = max(0.0, min(100.0, pop_pct))
     lower = max(0, min(90, int(pop_pct // 10) * 10))
     upper = lower + 10
     return f"{lower}-{upper}%"
+
+
+def estimate_win_rate_bucket(delta: float) -> str:
+    """回傳理論勝率的10%區間字串。"""
+    return _bucket_pct((1 - abs(delta)) * 100)
 
 
 def build_credit_spread(
@@ -133,13 +140,15 @@ def build_credit_spread(
     margin_required = max_loss  # 定義風險價差的標準保證金公式：保證金 = 最大虧損
 
     win_rate_bucket = "N/A"
+    win_rate_pop: Optional[float] = None
     if short_iv > 0:
         delta = float(black_scholes_delta(
             spot=spot, strike=short_leg.strike, time_to_expiry_years=time_to_expiry_years,
             iv=short_iv, option_type=option_type.lower(),
         ))
         if not math.isnan(delta):
-            win_rate_bucket = estimate_win_rate_bucket(delta)
+            win_rate_pop = (1 - abs(delta)) * 100
+            win_rate_bucket = _bucket_pct(win_rate_pop)
 
     otm_pct = _otm_pct(spot, short_leg.strike, side) * 100
     side_label = "下方" if side == "put" else "上方"
@@ -164,6 +173,7 @@ def build_credit_spread(
         margin_required=margin_required,
         risk_reward_ratio=f"1 : {max_loss / max_profit:.1f}" if max_profit > 0 else "N/A",
         win_rate_bucket=win_rate_bucket,
+        win_rate_pop=win_rate_pop,
         ai_advice=ai_advice,
     )
 
@@ -183,6 +193,21 @@ def build_iron_condor(
     put_short_strike = put_side.legs[0].strike_price
     call_short_strike = call_side.legs[0].strike_price
 
+    # 2026-07-26修正（使用者發現）：Iron Condor要拿到max_profit，兩腳都不能被
+    # 突破，不是任一腳單獨的存活機率——原本直接把put_side/call_side各自的
+    # win_rate_bucket字串拼在一起顯示，會讓使用者誤以為70-80%是這個策略的
+    # 真實勝率，但那只是「put這一腳沒被跌破」的機率。正確算法：
+    # combined = 1 - P(跌破put) - P(突破call) = put_pop + call_pop - 100
+    # （兩個突破事件互斥——到期價格不可能同時低於put履約價又高於call履約價），
+    # 用的還是同一套Delta近似（跟單腳算法一致，只是現在正確組合起來）。
+    if put_side.win_rate_pop is not None and call_side.win_rate_pop is not None:
+        combined_pop = max(0.0, put_side.win_rate_pop + call_side.win_rate_pop - 100.0)
+        win_rate_bucket = _bucket_pct(combined_pop)
+        win_rate_pop: Optional[float] = combined_pop
+    else:
+        win_rate_bucket = "N/A"
+        win_rate_pop = None
+
     return SpreadResult(
         name="Iron Condor（鐵鷹策略）",
         spread_type="iron_condor",
@@ -191,9 +216,12 @@ def build_iron_condor(
         max_loss=max_loss,
         margin_required=margin_required,
         risk_reward_ratio=f"1 : {max_loss / max_profit:.1f}" if max_profit > 0 else "N/A",
-        win_rate_bucket=f"賣方Put {put_side.win_rate_bucket} / 賣方Call {call_side.win_rate_bucket}",
+        win_rate_bucket=win_rate_bucket,
+        win_rate_pop=win_rate_pop,
+        leg_win_rates={"put": put_side.win_rate_bucket, "call": call_side.win_rate_bucket},
         ai_advice=(
             f"兩側各設一組價差，只要到期時股價落在 ${put_short_strike:.0f} ~ ${call_short_strike:.0f} "
             f"之間即可拿到最大收益，適合震盪整理格局；若單邊被突破，虧損以較嚴重的那一側為準（兩側不會同時虧損）。"
+            f"理論勝率{win_rate_bucket}是「兩腳都不破」的聯合機率，會比任一腳單獨的存活機率低。"
         ),
     )

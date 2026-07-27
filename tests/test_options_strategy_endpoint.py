@@ -93,6 +93,14 @@ def test_neutral_returns_iron_condor(monkeypatch):
     body = resp.json()
     assert body["strategy"]["type"] == "iron_condor"
     assert len(body["strategy"]["legs"]) == 4
+    # 2026-07-26修正：win_rate_estimate必須是「兩腳都不破」的聯合機率，比leg_win_rates
+    # 裡任一腳單獨的存活機率都低，不能讓使用者誤把單腳存活率看成整個策略的勝率
+    leg_rates = body["strategy"]["leg_win_rates"]
+    assert leg_rates is not None and "put" in leg_rates and "call" in leg_rates
+    combined_lower_bound = int(body["strategy"]["win_rate_estimate"].split("-")[0])
+    put_lower_bound = int(leg_rates["put"].split("-")[0])
+    call_lower_bound = int(leg_rates["call"].split("-")[0])
+    assert combined_lower_bound <= min(put_lower_bound, call_lower_bound)
 
 
 def test_uses_sentiment_label_for_display_when_provided(monkeypatch):
