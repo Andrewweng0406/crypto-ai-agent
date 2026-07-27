@@ -676,6 +676,8 @@ class OptionsGexPoint(BaseModel):
     call_gex: float
     put_gex: float
     net_gex: float
+    call_oi: float = 0.0  # 未平倉合約口數（見gex_engine.compute_net_gex_by_strike），只給前端hover顯示用，不影響GEX計算
+    put_oi: float = 0.0
 
 
 class OptionsGexResponse(BaseModel):

@@ -696,6 +696,8 @@ export interface BackendOptionsGexPoint {
   call_gex: number
   put_gex: number
   net_gex: number
+  call_oi: number
+  put_oi: number
 }
 
 export interface BackendOptionsGexResponse {
@@ -722,6 +724,8 @@ export interface OptionsGexPoint {
   callGex: number
   putGex: number
   netGex: number
+  callOi: number
+  putOi: number
 }
 
 export interface OptionsGexData {
@@ -748,9 +752,11 @@ export function adaptOptionsGexList(raw: BackendOptionsGexListResponse): {
       spotPrice: u.spot_price,
       expiry: u.expiry,
       gammaFlipStrike: u.gamma_flip_strike,
-      points: u.points.map((p) => ({ strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex })),
+      points: u.points.map((p) => ({
+        strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex, callOi: p.call_oi, putOi: p.put_oi,
+      })),
       previousDayPoints: u.previous_day_points.map((p) => ({
-        strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex,
+        strike: p.strike, callGex: p.call_gex, putGex: p.put_gex, netGex: p.net_gex, callOi: p.call_oi, putOi: p.put_oi,
       })),
       whaleSweepSupported: u.whale_sweep_supported,
       updatedAt: u.updated_at,

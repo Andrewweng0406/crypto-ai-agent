@@ -117,11 +117,14 @@ def compute_net_gex_by_strike(
     """Net GEX per strike for one expiry.
 
     Returns a list of dicts (strike, call_gex, put_gex, net_gex, call_iv,
-    put_iv), sorted by strike ascending, ready to feed a bar/area chart
-    directly. call_iv/put_iv are carried through unchanged (not used for the
-    chart itself) so callers can look them up later to estimate delta for an
-    out-of-band event at the same strike/expiry (e.g. a whale-sweep trade)
-    without re-fetching the whole chain.
+    put_iv, call_oi, put_oi), sorted by strike ascending, ready to feed a
+    bar/area chart directly. call_iv/put_iv are carried through unchanged
+    (not used for the chart itself) so callers can look them up later to
+    estimate delta for an out-of-band event at the same strike/expiry (e.g.
+    a whale-sweep trade) without re-fetching the whole chain. call_oi/put_oi
+    (2026-07-26) are likewise carried through for display only — the raw
+    open-interest contract counts behind the dollar-GEX figure, for a chart
+    tooltip that wants to show "why" a bar is tall, not just the $ amount.
     """
     if not legs:
         return []
@@ -150,6 +153,8 @@ def compute_net_gex_by_strike(
             "net_gex": float(net_gex[i]),
             "call_iv": float(call_iv[i]),
             "put_iv": float(put_iv[i]),
+            "call_oi": float(call_oi[i]),
+            "put_oi": float(put_oi[i]),
         }
         for i in order
     ]

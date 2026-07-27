@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ChevronLeft, ChevronRight, Crosshair } from "lucide-react"
-import { type OptionsGexData, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
+import { type OptionsGexData, type OptionsGexPoint, formatCompactUsd, formatPrice, formatTime } from "@/lib/signals"
 
 // 2026-07-16修復：原本X軸鎖死在現價前後±15%、看不到範圍外的履約價，只能靠邊緣
 // 箭頭「知道」還有更遠的臨界點，卻沒辦法真的滑過去看。現在整條履約價都畫進同一張
@@ -16,6 +16,7 @@ const SPOT_LINE_COLOR = "#ff8a00" // 亮橘色，刻意跟 long(綠)/short(紅) 
 
 export function GexWallChart({ data }: { data: OptionsGexData }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [hovered, setHovered] = useState<{ point: OptionsGexPoint; clientX: number; clientY: number } | null>(null)
 
   if (!data.hasData || data.points.length === 0 || data.spotPrice === null) {
     return (
@@ -213,7 +214,16 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
               const labelY = p.netGex >= 0 ? Math.max(top - 8, padTop - 12) : Math.min(bottom + 16, height - padBottom - 4)
 
               return (
-                <g key={p.strike}>
+                <g
+                  key={p.strike}
+                  onMouseEnter={(e) => setHovered({ point: p, clientX: e.clientX, clientY: e.clientY })}
+                  onMouseMove={(e) => setHovered({ point: p, clientX: e.clientX, clientY: e.clientY })}
+                  onMouseLeave={() => setHovered(null)}
+                >
+                  {/* 透明加寬命中區：柱子本身在密集區間可能只有幾px寬，直接hover柱子很難瞄準，
+                     這個區塊撐滿整個繪圖高度＋跟barWidth同寬，滑鼠移到履約價這條線上任何
+                     高度都能觸發，不用剛好對準柱子頂端。 */}
+                  <rect x={cx - bw / 2} y={padTop} width={bw} height={plotH} fill="transparent" />
                   {/* 昨天既有（或没有可比對資料時的今天全額）：較暗 */}
                   <rect
                     x={cx - bw / 2}
@@ -225,13 +235,8 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
                     stroke={isTop ? color : "none"}
                     strokeWidth={isTop ? 1.5 : 0}
                     rx="1"
-                  >
-                    <title>
-                      {hasPreviousDay
-                        ? `Strike $${formatPrice(p.strike)} · 昨天既有 ${formatCompactUsd(carriedNetGex)}`
-                        : `Strike $${formatPrice(p.strike)} · Net GEX ${formatCompactUsd(p.netGex)}`}
-                    </title>
-                  </rect>
+                    pointerEvents="none"
+                  />
                   {/* 今天新增：疊在既有部位外側，全不透明、比較亮，一眼看出今天哪裡在築新牆 */}
                   {newNetGex !== 0 && (
                     <rect
@@ -244,9 +249,8 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
                       stroke={color}
                       strokeWidth="1"
                       rx="1"
-                    >
-                      <title>{`Strike $${formatPrice(p.strike)} · 今天新增 ${formatCompactUsd(newNetGex)}`}</title>
-                    </rect>
+                      pointerEvents="none"
+                    />
                   )}
 
                   {isTop && (
@@ -322,6 +326,26 @@ export function GexWallChart({ data }: { data: OptionsGexData }) {
         <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center rounded-r-xl bg-gradient-to-l from-card to-transparent pr-1 pl-4">
           <ChevronRight className="size-4 text-muted-foreground/60" aria-hidden="true" />
         </div>
+
+        {hovered && (
+          <div
+            className="pointer-events-none fixed z-50 flex flex-col gap-1 rounded-lg border border-border/60 bg-popover px-3 py-2 text-xs shadow-lg"
+            style={{ left: hovered.clientX + 14, top: hovered.clientY + 14 }}
+          >
+            <span className="font-mono font-semibold text-foreground">Strike ${formatPrice(hovered.point.strike)}</span>
+            <span className={hovered.point.netGex >= 0 ? "text-chart-bull" : "text-chart-bear"}>
+              Net GEX {formatCompactUsd(hovered.point.netGex)}
+            </span>
+            <span className="text-muted-foreground">
+              Call GEX {formatCompactUsd(hovered.point.callGex)} · 未平倉 {hovered.point.callOi.toLocaleString()} 口
+            </span>
+            {/* callGex/putGex 後端存的都是正值曝險量（見gex_engine.py），這裡把put顯示成負值
+               只是呈現慣例：Net GEX = callGex - putGex，負著看才能一眼看出這條腿怎麼拉動Net GEX */}
+            <span className="text-muted-foreground">
+              Put GEX {formatCompactUsd(-hovered.point.putGex)} · 未平倉 {hovered.point.putOi.toLocaleString()} 口
+            </span>
+          </div>
+        )}
       </div>
 
       {gammaFlipStrike === null && (
