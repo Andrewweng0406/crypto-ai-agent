@@ -9,6 +9,7 @@ import {
   Flame,
   FlaskConical,
   Landmark,
+  LayoutDashboard,
   Newspaper,
   PieChart,
   Radar,
@@ -71,6 +72,7 @@ import { OptionsAnalyticsPanel } from "@/components/options-analytics-panel"
 import { BacktestSandboxPanel } from "@/components/backtest-sandbox-panel"
 import { HighWinRatePanel } from "@/components/high-winrate-panel"
 import { InstitutionResearchPanel } from "@/components/institution-research-panel"
+import { StockOverviewPanel } from "@/components/stock-overview-panel"
 import { LiquidationHeatmapChart } from "@/components/liquidation-heatmap-chart"
 import { TradingChatbot } from "@/components/trading-chatbot"
 import { WatchlistEditor } from "@/components/watchlist-editor"
@@ -97,6 +99,7 @@ type TabKey =
   | "overview"
   | "highWinRate"
   | "research"
+  | "stockOverview"
 
 interface TabDef {
   key: TabKey
@@ -135,6 +138,7 @@ const TAB_CATEGORIES: TabCategory[] = [
     key: "usStocks",
     label: "美股",
     tabs: [
+      { key: "stockOverview", label: "個股總覽", icon: LayoutDashboard },
       { key: "usStock", label: "美股 ORB", icon: CandlestickChart },
       { key: "optionsAnalytics", label: "期權分析", icon: PieChart },
       { key: "highWinRate", label: "高勝率策略", icon: Target },
@@ -177,6 +181,7 @@ export function TradeDashboard() {
   const isOverviewMode = mode === "overview"
   const isHighWinRateMode = mode === "highWinRate"
   const isResearchMode = mode === "research"
+  const isStockOverviewMode = mode === "stockOverview"
 
   const {
     data: rawSignals,
@@ -191,7 +196,8 @@ export function TradeDashboard() {
     isBacktestMode ||
     isOverviewMode ||
     isHighWinRateMode ||
-    isResearchMode
+    isResearchMode ||
+    isStockOverviewMode
       ? null
       : `/api/signals?universe=${mode}`,
     fetcher,
@@ -423,7 +429,7 @@ export function TradeDashboard() {
   const selectedUSStock = usStockData.stocks.find((s) => s.symbol === selectedSymbol) ?? null
   const selectedMemeTrade = memeTradeCoins.find((c) => c.symbol === selectedSymbol) ?? null
 
-  const activeError = isBacktestMode || isHighWinRateMode || isResearchMode
+  const activeError = isBacktestMode || isHighWinRateMode || isResearchMode || isStockOverviewMode
     ? undefined
     : isOverviewMode
       // 2026-07-12 稽核修復：原本要「兩個來源同時出錯」才顯示頂部錯誤橫幅，
@@ -442,7 +448,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexError
                 : signalsError
-  const activeLoading = isBacktestMode || isHighWinRateMode || isResearchMode
+  const activeLoading = isBacktestMode || isHighWinRateMode || isResearchMode || isStockOverviewMode
     ? false
     : isOverviewMode
       ? optionsGexLoading || usStocksLoading
@@ -457,7 +463,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? optionsGexLoading
                 : signalsLoading
-  const isConnected = isBacktestMode || isHighWinRateMode || isResearchMode
+  const isConnected = isBacktestMode || isHighWinRateMode || isResearchMode || isStockOverviewMode
     ? true
     : isOverviewMode
       ? (!optionsGexError && !!rawOptionsGex) || (!usStocksError && !!rawUSStocks)
@@ -777,6 +783,16 @@ export function TradeDashboard() {
             <strong className="text-foreground">進場判斷永遠只認前一天已確認收盤的訊號</strong>
             ，不會被盤中估算值誤導。均值回歸策略平均持倉1-3天，設計目標是高勝率+低回撤，不是跟大盤比總報酬。
             單次回測/滾動式驗證請至「🚀 回測沙盒」分頁。
+          </p>
+        </>
+      ) : isStockOverviewMode ? (
+        <>
+          <StockOverviewPanel />
+          <p className="text-center text-xs text-muted-foreground">
+            個股總覽不是新的資料源：把美股ORB、期權分析(GEX)、高勝率策略(RSI2)、機構研究、期權策略建議這幾個
+            本來分散的分頁，依你選的標的重新組裝在同一頁，方便一次看完全貌。
+            <strong className="text-foreground">RSI2均值回歸（賭超賣反彈）刻意跟上方共振判斷（順勢邏輯）分開顯示，不合併計分</strong>
+            ——兩者是不同哲學的策略，硬湊成一個分數會讓判斷失真。各區塊資料的更新頻率/侷限比照各自原本的分頁說明。
           </p>
         </>
       ) : isResearchMode ? (

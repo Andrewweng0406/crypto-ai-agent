@@ -1563,6 +1563,9 @@ export interface BackendOptionStrategyResponse {
   strategies: BackendOptionStrategyDetail[]
   message: string | null
   win_rate_disclaimer: string
+  // 2026-07-27新增：休市時bid/ask普遍是0，strategies會是空陣列，但原因是「現在沒開盤」
+  // 不是「真的流動性不足」——前端要分開顯示，不能都用同一句話誤導使用者。
+  market_open: boolean
 }
 
 export interface OptionStrategyLeg {
@@ -1596,10 +1599,12 @@ export interface OptionStrategyResult {
   strategies: OptionStrategyDetail[]
   message: string | null
   winRateDisclaimer: string
+  marketOpen: boolean
 }
 
 export function adaptOptionStrategy(raw: BackendOptionStrategyResponse): OptionStrategyResult {
   return {
+    marketOpen: raw.market_open,
     symbol: raw.symbol,
     currentPrice: raw.current_price,
     marketSentiment: raw.market_sentiment,

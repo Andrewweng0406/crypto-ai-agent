@@ -750,6 +750,11 @@ class OptionStrategyResponse(BaseModel):
     # 對應的那個。空陣列代表三種都因為流動性不足/找不到合適履約價而失敗。
     strategies: List[OptionStrategyDetail] = []
     message: Optional[str] = None  # strategies為空陣列時說明原因
+    # 2026-07-27新增：休市時yfinance的bid/ask普遍會是0（沒有做市商在報價），
+    # 這時strategies會是空陣列——但原因是「現在沒開盤」不是「真的流動性差」，
+    # 這兩種情況對使用者的意義完全不同，前端要分開顯示，不能都說「流動性不足」
+    # 誤導使用者以為系統壞了或這檔真的沒人要交易。
+    market_open: bool = False
     win_rate_disclaimer: str = (
         "理論勝率為Black-Scholes Delta估算的機率OTM，屬於業界常見估算方法（如tastytrade的Probability "
         "of Profit），不是回測驗證過的實際統計勝率，僅供參考。"
@@ -4331,6 +4336,23 @@ SUPERTREND_CAVEAT = (
     "換成ETH/SOL後複利報酬趨近於零；最佳參數在不同時間窗並不穩定，不建議依賴單次回測數字重倉。"
 )
 
+# 2026-07-27實測：真的用9檔標的（TSLA/NVDA/MSTR/SOXL/TQQQ/AAPL/AMD/META/COIN）
+# 各跑一次60天回測（yfinance 15分鐘K線的硬上限，見BACKTEST_YF_MAX_DAYS），單一
+# 標的普遍只有1-6筆交易（ORB本身條件嚴格：開盤區間+突破+RVOL+大盤濾網同一天
+# 都要成立），遠低於BACKTEST_MIN_TRADES_FOR_CONFIDENCE，個別勝率在16.67%~100%
+# 之間劇烈震盪、統計上毫無意義。9檔加總32筆交易、勝率50%，但SOXL(3倍槓桿ETF)
+# 60天內MDD就到-31.94%，AAPL/TQQQ/META看起來獲利、SOXL/AMD/COIN看起來虧損，
+# 沒有一致方向——這不是「驗證過站得住腳」，是「資料量結構性不足以下結論」，
+# 跟supertrend/RSI2那種有多年歷史可用的策略不是同一種狀況，yfinance的60天
+# 15分鐘K線上限本身就讓ORB永遠無法像其他策略一樣做真正的樣本外驗證。
+US_STOCK_ORB_CAVEAT = (
+    "美股ORB當沖：2026-07-27實測9檔標的各60天（yfinance 15分鐘K線硬上限）——"
+    "單一標的普遍僅1-6筆交易，遠低於統計信心門檻，個別勝率在16.67%~100%間劇烈震盪；"
+    "9檔加總32筆交易勝率50%，但方向不一致（AAPL/TQQQ/META正報酬，SOXL/AMD/COIN負報酬），"
+    "槓桿ETF（SOXL）60天內最大回撤達-31.94%。這不是「已驗證」，是「資料量structurally不足以下結論」——"
+    "yfinance 15分鐘K線最長只給60天，ORB永遠無法像其他策略一樣做真正的樣本外驗證，請勿依賴單次回測數字重倉。"
+)
+
 
 STOCK_MEANREV_MAX_DAYS_RANGE = 365 * 7  # RSI2均值回歸需要好幾年日線資料，遠超過其他策略的180天上限
 STOCK_MEANREV_FETCH_YEARS = 7           # 本機驗證抓的是2020-01-01至今（約6.5年），這裡抓7年留緩衝，
@@ -5396,20 +5418,21 @@ async def get_options_strategy(
         raise HTTPException(status_code=400, detail=f"{symbol} 不在期權分析關注清單內，請先在期權分析分頁加入這檔標的")
 
     display_sentiment = sentiment_label or {"bullish": "看漲", "bearish": "看跌", "neutral": "震盪"}[sentiment]
+    market_open = _is_us_market_active(datetime.now(ZoneInfo(US_MARKET_TZ)))
 
     spot = await yfinance_client.get_spot_price(symbol)
     if spot is None:
-        return OptionStrategyResponse(symbol=symbol, current_price=0.0, market_sentiment=display_sentiment, message="無法取得現貨價，請稍後再試")
+        return OptionStrategyResponse(symbol=symbol, current_price=0.0, market_sentiment=display_sentiment, market_open=market_open, message="無法取得現貨價，請稍後再試")
 
     expiry = await yfinance_client.get_expiry_by_dte(
         symbol, min_days=OPTIONS_STRATEGY_MIN_DTE, max_days=OPTIONS_STRATEGY_MAX_DTE, target_days=OPTIONS_STRATEGY_TARGET_DTE,
     )
     if expiry is None:
-        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, message="找不到合適到期日的期權鏈")
+        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, market_open=market_open, message="找不到合適到期日的期權鏈")
 
     legs = await yfinance_client.get_option_chain_legs(symbol, expiry)
     if not legs:
-        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, message="查無期權鏈資料")
+        return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, market_open=market_open, message="查無期權鏈資料")
 
     time_to_expiry_years = (datetime.strptime(expiry, "%Y-%m-%d").date() - datetime.now().date()).days / 365.0
 
@@ -5445,12 +5468,17 @@ async def get_options_strategy(
         ))
 
     if not strategies:
+        message = (
+            "目前非美股交易時段，做市商沒有報價（bid/ask皆為0），開盤後再試一次即可——不是這檔標的沒有機會，"
+            "純粹是現在沒人在報價。"
+            if not market_open else
+            "目前期權鏈流動性不足，或找不到符合安全墊範圍（現價8%~15%）的履約價，暫無建議"
+        )
         return OptionStrategyResponse(
-            symbol=symbol, current_price=spot, market_sentiment=display_sentiment,
-            message="目前期權鏈流動性不足，或找不到符合安全墊範圍（現價8%~15%）的履約價，暫無建議",
+            symbol=symbol, current_price=spot, market_sentiment=display_sentiment, market_open=market_open, message=message,
         )
 
-    return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, strategies=strategies)
+    return OptionStrategyResponse(symbol=symbol, current_price=spot, market_sentiment=display_sentiment, market_open=market_open, strategies=strategies)
 
 
 @app.get("/api/options/watchlist", response_model=WatchlistResponse)
@@ -6205,13 +6233,16 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
     公開端點，靠IP限流（15次/小時，跟chatbot同規格）防止被用來刷爆外部交易所/
     yfinance API額度——這是後端唯一一個公開就會觸發大量外部API呼叫的端點。
 
-    只支援四個真的有歷史資料源、也真的驗證過的策略：
+    支援四個真的有歷史資料源的策略，但驗證程度不一（不是全部都「已驗證」，
+    見各自的 strategy_caveat）：
       - crypto_donchian_4h（4H K線，跟實盤 deep_scan_symbol 完全對齊）／
         meme_volume_spike（1H K線，跟實盤 scan_meme_trade_symbol 完全對齊）：
         ccxt歷史K線，symbol可傳裸代號（如 "WIF"，自動補成 WIF/USDT:USDT）
         或完整ccxt符號
-      - us_stock_orb：yfinance 15分鐘K線，symbol傳美股代號（如 "NVDA"），
-        天數會被夾到yfinance的真實上限60天
+      - us_stock_orb：yfinance 15分鐘K線，symbol傳美股代號（如 "NVDA"），天數
+        會被夾到yfinance的真實上限60天——2026-07-27實測發現這個上限讓ORB
+        永遠無法累積到有統計意義的樣本數，不是「已驗證」策略，見US_STOCK_
+        ORB_CAVEAT。
       - supertrend_btc_long：ccxt 4H歷史K線，2026-07-11完整滾動式Walk-Forward+
         多資產驗證過只有「只做多、僅BTCUSDT」版本站得住腳（見SUPERTREND_CAVEAT），
         symbol強制鎖定BTC，傳其他代號會被拒絕，不開放做空。
@@ -6357,7 +6388,7 @@ async def run_backtest(payload: BacktestRequest, request: Request) -> BacktestRe
         symbol=symbol_raw, strategy_name=payload.strategy_name,
         sample_sufficient=summary["total_trades"] >= BACKTEST_MIN_TRADES_FOR_CONFIDENCE,
         days_range_requested=payload.days_range, days_range_used=min(days_range, BACKTEST_YF_MAX_DAYS),
-        data_source="yfinance", **summary,
+        data_source="yfinance", strategy_caveat=US_STOCK_ORB_CAVEAT, **summary,
     )
 
 

@@ -159,12 +159,36 @@ def test_returns_message_when_no_valid_strikes_found(monkeypatch):
     # 沒有任何履約價落在安全墊範圍內
     legs = [OptionLegRaw(strike=float(s), call_oi=0, call_iv=0, put_oi=0, put_iv=0) for s in [50, 150]]
     _patch_common(monkeypatch, legs=legs)
+    monkeypatch.setattr(main, "_is_us_market_active", lambda _now: True)
 
     resp = client.get("/api/options/strategy", params={"symbol": SYMBOL, "sentiment": "bullish"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["strategies"] == []
     assert body["message"] is not None
+    assert body["market_open"] is True
+
+
+def test_market_closed_message_distinguishes_from_low_liquidity(monkeypatch):
+    # 2026-07-27新增：休市時bid/ask普遍是0，這個情境不該跟「真的流動性不足」共用
+    # 同一句話，容易讓使用者誤以為系統壞了或這檔真的沒人要交易。
+    legs = _fake_legs()  # 全部bid/ask=0，模擬休市時yfinance回傳的樣子
+    _patch_common(monkeypatch, legs=legs)
+    monkeypatch.setattr(main, "_is_us_market_active", lambda _now: False)
+
+    resp = client.get("/api/options/strategy", params={"symbol": SYMBOL, "sentiment": "bullish"})
+    body = resp.json()
+    assert body["market_open"] is False
+    assert body["strategies"] == []
+    assert "休市" in body["message"] or "非美股交易時段" in body["message"]
+
+
+def test_market_open_field_true_during_market_hours_with_strategies(monkeypatch):
+    _patch_common(monkeypatch, legs=BOTH_SIDES_LEGS)
+    monkeypatch.setattr(main, "_is_us_market_active", lambda _now: True)
+
+    resp = client.get("/api/options/strategy", params={"symbol": SYMBOL, "sentiment": "bullish"})
+    assert resp.json()["market_open"] is True
 
 
 def test_returns_message_when_spot_price_unavailable(monkeypatch):

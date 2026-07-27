@@ -141,9 +141,15 @@ export function OptionStrategyCard({ gex, recentSweeps }: OptionStrategyCardProp
             )}
           </>
         ) : (
-          <p className="rounded-xl border border-dashed border-border/60 px-4 py-4 text-center text-xs text-muted-foreground">
-            {result.message ?? "暫無建議"}
-          </p>
+          <div
+            className={cn(
+              "flex flex-col items-center gap-1.5 rounded-xl border border-dashed px-4 py-4 text-center text-xs",
+              result.marketOpen ? "border-border/60 text-muted-foreground" : "border-amber-500/30 bg-amber-500/[0.06] text-muted-foreground",
+            )}
+          >
+            {!result.marketOpen && <span className="font-semibold text-amber-500">⏸ 目前非美股交易時段</span>}
+            <span>{result.message ?? "暫無建議"}</span>
+          </div>
         ))}
     </div>
   )
