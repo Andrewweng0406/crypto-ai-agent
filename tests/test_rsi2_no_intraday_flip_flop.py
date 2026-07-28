@@ -138,7 +138,7 @@ def test_purge_drops_entire_group_sharing_entry_and_stop():
         _record("GOOGL", 358.15, 331.36, "2026-07-15T15:25:05+00:00"),
         _record("NVDA", 200.0, 190.0, "2026-07-15T15:10:00+00:00"),  # 唯一一筆，真實交易，應保留
     ]
-    cleaned = main._purge_duplicate_rsi2_history(history)
+    cleaned = main._purge_duplicate_trade_history(history, "RSI2盤中誤判產生的")
     assert [r["symbol"] for r in cleaned] == ["NVDA"]
 
 
@@ -147,5 +147,5 @@ def test_purge_is_noop_on_already_clean_history():
         _record("NVDA", 200.0, 190.0, "2026-07-15T15:10:00+00:00"),
         _record("META", 500.0, 480.0, "2026-07-14T15:10:00+00:00"),
     ]
-    cleaned = main._purge_duplicate_rsi2_history(history)
+    cleaned = main._purge_duplicate_trade_history(history, "RSI2盤中誤判產生的")
     assert len(cleaned) == 2

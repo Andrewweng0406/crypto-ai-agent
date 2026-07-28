@@ -4115,16 +4115,21 @@ def save_state_snapshot() -> None:
         logger.warning("寫入狀態快照失敗：%s", exc)
 
 
-def _purge_duplicate_rsi2_history(history: list) -> list:
+def _purge_duplicate_trade_history(history: list, label: str) -> list:
     """
-    2026-07-15 資料清理：修復前的 RSI2 盤中止盈誤判 bug（見 scan_rsi2_stock 說明）
-    會讓同一檔標的在同一天內反覆開平倉，產生entry_price/stop_loss完全相同的一長串
-    假交易紀錄（實際案例：GOOGL 一天內灌出30筆，全部同一組entry_price/stop_loss）。
-    真實交易的entry_price是浮點數（取自yfinance當天開盤價），兩筆真正不同交易巧合
-    出現完全相同entry_price+stop_loss的機率趨近於零，所以用這個當「這是bug產生的
-    假紀錄」的判斷依據——同一組(symbol, entry_price, stop_loss)出現2次以上的，
-    整組都不採信（不是只丟棄多餘的，因為連第一筆的出場也是用同一套有問題的盤中
-    估算值判斷出來的，一樣不可信）。每次啟動都會跑，乾淨的資料跑起來是no-op。
+    通用版重複假交易清理，原本只給RSI2用（2026-07-15），2026-07-27發現主流幣/
+    市場掃描的 state.history 也有同一種bug訊號（ALLO/USDT:USDT在2026-07-13一天
+    內灌出7筆entry_price/exit_price/stop_loss完全相同的紀錄，全部12-14秒內開平
+    倉完畢），把原本寫死給RSI2用的邏輯抽成通用版，兩邊共用。
+
+    真實交易的entry_price是浮點數（取自即時報價/yfinance開盤價），兩筆真正不同
+    交易巧合出現完全相同entry_price+stop_loss的機率趨近於零，所以用這個當「這是
+    bug產生的假紀錄」的判斷依據——同一組(symbol, entry_price, stop_loss)出現
+    2次以上的，整組都不採信（不是只丟棄多餘的，因為連第一筆的出場也是用同一套
+    有問題的估算值判斷出來的，一樣不可信）。每次啟動都會跑，乾淨的資料跑起來是
+    no-op。ALLO那組是2026-07-14「即時報價取代舊K線收盤價當進場價」那次修復
+    之前的舊資料，修復後至今沒有出現過新的重複組——這是清理歷史髒資料，不是
+    現在還在發生的bug。
     """
     groups: dict = {}
     for record in history:
@@ -4140,9 +4145,9 @@ def _purge_duplicate_rsi2_history(history: list) -> list:
         cleaned.extend(records)
 
     if dropped:
-        logger.warning("清理掉 %d 筆疑似RSI2盤中誤判產生的重複假交易紀錄", dropped)
+        logger.warning("清理掉 %d 筆疑似%s重複假交易紀錄", dropped, label)
 
-    # 依 closed_at 由新到舊排序，保持跟原本 rsi2_history（appendleft）一致的順序。
+    # 依 closed_at 由新到舊排序，保持跟原本 deque（appendleft）一致的順序。
     cleaned.sort(key=lambda r: r.get("closed_at") or "", reverse=True)
     return cleaned
 
@@ -4162,7 +4167,8 @@ def load_state_snapshot() -> None:
             sym_state.open_signal = data.get("open_signal")
             sym_state.current_price = data.get("current_price")
 
-        state.history.extend(snapshot.get("history", []))
+        restored_history = _purge_duplicate_trade_history(snapshot.get("history", []), "主流幣/市場掃描")
+        state.history.extend(restored_history)
         state.scan_universe = snapshot.get("scan_universe", [])
 
         for symbol, data in snapshot.get("meme_states", {}).items():
@@ -4250,7 +4256,7 @@ def load_state_snapshot() -> None:
             rsi2_st = state.get_rsi2_state(symbol)
             rsi2_st.open_signal = data.get("open_signal")
             rsi2_st.triggered_date = data.get("triggered_date")
-        restored_rsi2_history = _purge_duplicate_rsi2_history(snapshot.get("rsi2_history", []))
+        restored_rsi2_history = _purge_duplicate_trade_history(snapshot.get("rsi2_history", []), "RSI2盤中誤判產生的")
         state.rsi2_history.extend(restored_rsi2_history)
 
         restored_positions = sum(1 for d in snapshot.get("symbols", {}).values() if d.get("open_signal"))
