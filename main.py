@@ -2350,11 +2350,13 @@ async def evaluate_us_stock_open_signal(ticker_symbol: str, current_price: float
     logger.info("美股 ORB 訊號結算：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
 
     emoji = "✅" if result == "WIN" else "❌"
-    return (
+    notification = (
         f"{emoji} <b>美股 ORB 訊號結算</b>\n{signal['display_name']} {side}\n"
         f"結果：{result}\n進場：{signal['entry_price']:.4f} → 出場：{exit_price:.4f}\n"
         f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
     )
+    dup_warning = _check_new_duplicate_trade(state.us_stock_history, closed_record, "美股ORB")
+    return f"{notification}\n\n{dup_warning}" if dup_warning else notification
 
 
 async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) -> Optional[str]:
@@ -2389,12 +2391,14 @@ async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) 
     append_jsonl(US_STOCK_TRADE_LOG_PATH, closed_record)
     logger.info("美股 ORB 收盤強制平倉：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
 
-    return (
+    notification = (
         f"🌙 <b>美股 ORB 收盤強制平倉</b>\n{signal['display_name']} {side}\n"
         f"結果：{result}（當沖規則：收盤前未觸及TP/SL，以收盤前報價平倉）\n"
         f"進場：{signal['entry_price']:.4f} → 出場：{exit_price:.4f}\n"
         f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
     )
+    dup_warning = _check_new_duplicate_trade(state.us_stock_history, closed_record, "美股ORB")
+    return f"{notification}\n\n{dup_warning}" if dup_warning else notification
 
 
 async def flatten_all_us_stock_positions() -> None:
@@ -2689,11 +2693,13 @@ async def evaluate_meme_trade_signal(ticker_symbol: str, current_price: float) -
     logger.info("迷因當沖訊號結算：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
 
     emoji = "✅" if result == "WIN" else "❌"
-    return (
+    notification = (
         f"{emoji} <b>迷因當沖訊號結算</b>\n{signal['display_name']} {side}\n"
         f"結果：{result}\n進場：{signal['entry_price']:.6f} → 出場：{exit_price:.6f}\n"
         f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
     )
+    dup_warning = _check_new_duplicate_trade(state.meme_trade_history, closed_record, "迷因當沖")
+    return f"{notification}\n\n{dup_warning}" if dup_warning else notification
 
 
 async def meme_trade_loop(exchange_pool: dict) -> None:
@@ -3554,6 +3560,9 @@ async def scan_rsi2_stock(display_name: str) -> None:
                     f"進場：{side['entry_price']:.2f} → 出場：{exit_price:.2f}\n"
                     f"損益：{pnl_pct:+.2f}%"
                 )
+                dup_warning = _check_new_duplicate_trade(state.rsi2_history, closed_record, "RSI2盤中誤判產生的")
+                if dup_warning:
+                    settlement_notification = f"{settlement_notification}\n\n{dup_warning}"
 
         # 只在收盤已確認、昨天訊號成立、且目前沒有部位時才考慮開新倉——進場價用
         # 「今天的開盤價」（yfinance當天K棒的open欄位一開盤就固定，不會像close一樣持續跳動）。
@@ -3737,11 +3746,13 @@ async def evaluate_open_signal(symbol: str, current_price: float) -> Optional[st
     logger.info("訊號結算：%s %s，結果=%s，損益=%.2f%%", symbol, side, result, pnl_pct)
 
     emoji = "✅" if result == "WIN" else "❌"
-    return (
+    notification = (
         f"{emoji} <b>訊號結算</b>\n{symbol} {side}\n"
         f"結果：{result}\n進場：{signal['entry_price']:.4f} → 出場：{exit_price:.4f}\n"
         f"損益：{pnl_pct:+.2f}%（{signal['leverage']}x 槓桿）"
     )
+    dup_warning = _check_new_duplicate_trade(state.history, closed_record, "主流幣/市場掃描")
+    return f"{notification}\n\n{dup_warning}" if dup_warning else notification
 
 
 async def refresh_major_smart_money(exchange_pool: dict) -> None:
@@ -4113,6 +4124,34 @@ def save_state_snapshot() -> None:
         os.replace(tmp_path, STATE_SNAPSHOT_PATH)  # 原子性覆蓋，避免寫到一半時被讀到壞檔
     except Exception as exc:  # noqa: BLE001
         logger.warning("寫入狀態快照失敗：%s", exc)
+
+
+def _check_new_duplicate_trade(history, new_record: dict, label: str) -> Optional[str]:
+    """
+    2026-07-28新增：即時偵測「這筆剛結算的交易，是不是跟歷史裡其他既有紀錄
+    共用完全相同的(symbol, entry_price, stop_loss)」——這是2026-07-15(RSI2/
+    GOOGL)跟2026-07-27(ALLO/主流幣)都出現過的同一種bug訊號，兩次都是等到
+    累積幾十筆、有人手動去查才發現。這裡改成每次結算都即時檢查，一旦出現
+    就馬上回傳警告文字讓呼叫端推播，不用再等人工事後發現。呼叫端須在
+    history.appendleft(new_record) 之後才呼叫（history 當下已經包含
+    new_record 本身，用物件identity排除掉自己再比對，不能只比對值——同一筆
+    紀錄跟自己值相同是必然的，不能算「重複」）。entry_price/stop_loss任一為
+    None時代表這筆資料本身就不完整，跳過不比對。
+    """
+    key = (new_record.get("symbol"), new_record.get("entry_price"), new_record.get("stop_loss"))
+    if key[1] is None or key[2] is None:
+        return None
+    matches = sum(
+        1 for r in history
+        if r is not new_record and (r.get("symbol"), r.get("entry_price"), r.get("stop_loss")) == key
+    )
+    if matches == 0:
+        return None
+    return (
+        f"⚠️ <b>偵測到重複交易紀錄</b>\n{label}：{key[0]}\n"
+        f"entry_price={key[1]}、stop_loss={key[2]} 跟歷史裡其他 {matches} 筆完全相同，"
+        f"疑似同一種bug訊號重演，請檢查程式邏輯。"
+    )
 
 
 def _purge_duplicate_trade_history(history: list, label: str) -> list:
