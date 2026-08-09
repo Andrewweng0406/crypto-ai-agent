@@ -2271,6 +2271,49 @@ async def scan_us_stock_orb(display_name: str, ticker_symbol: str) -> None:
             "day_high_so_far": float(today_df["high"].max()),
         }
 
+    # 2026-08-09 補上跟 deep_scan_symbol()（見該處 2026-07-14 修復說明、ALLO事故）
+    # 同一套live報價再驗證：candidate 的 entry_price 來自「最近一根已收盤」15分鐘
+    # K棒的收盤價，但這支函式從抓K線到真正要開倉之間，一樣可能已經過了數十秒甚至
+    # 分鐘。美股ORB沒有補這一關的話，等於複製了同一種「用過期價格算SL/TP、開倉當下
+    # 就已經穿越停損位」的風險——而且15分鐘K棒本身的過期窗口比加密貨幣那套的4小時線
+    # /1小時線掃描週期還危險，因為ORB訊號本來就是在開盤後最劇烈波動的那段時間觸發。
+    if candidate is not None:
+        async with state.lock:
+            live_price = state.get_us_stock_state(ticker_symbol).current_price
+
+        if live_price is not None and live_price > 0:
+            breakout_invalidated = (
+                candidate["side"] == "Long" and live_price <= opening_high
+            ) or (
+                candidate["side"] == "Short" and live_price >= opening_low
+            )
+            if breakout_invalidated:
+                logger.info("美股 ORB：%s 突破已失效（即時價格已回到開盤區間內），放棄本次訊號", display_name)
+                candidate = None
+            else:
+                candidate["entry_price"] = live_price
+
+    # 2026-08-09 補上跟主流幣/迷因當沖同一套 MIN/MAX_SANE_STOP_LOSS_PCT 防呆（見
+    # MIN_SANE_STOP_LOSS_PCT 定義處的 XAUT 事故說明）：開盤區間太窄（低波動盤整日）
+    # 一樣會讓固定風險槓桿模型算出接近封頂的槓桿，在近乎雜訊的區間寬度上開出高槓桿
+    # 部位，是同一種失效模式，之前只補在唐奇安，這裡一併補齊。
+    if candidate is not None:
+        entry_price = candidate["entry_price"]
+        if candidate["side"] == "Long":
+            projected_sl_pct = (entry_price - opening_low) / entry_price * 100 if entry_price > 0 else float("inf")
+        else:
+            range_mid = (opening_high + opening_low) / 2
+            day_high_so_far = candidate.get("day_high_so_far", opening_high)
+            projected_stop_loss = max(range_mid, day_high_so_far)
+            projected_sl_pct = (
+                (projected_stop_loss - entry_price) / entry_price * 100 if entry_price > 0 else float("inf")
+            )
+        if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT or projected_sl_pct < MIN_SANE_STOP_LOSS_PCT:
+            logger.info(
+                "美股 ORB：%s 開盤區間止損距離%.2f%%超出合理範圍，放棄本次訊號", display_name, projected_sl_pct
+            )
+            candidate = None
+
     opened_signal: Optional[dict] = None
     async with state.lock:
         s = state.get_us_stock_state(ticker_symbol)
@@ -2619,8 +2662,8 @@ async def scan_meme_trade_symbol(exchange_pool: dict, display_name: str, ticker_
     atr = float(last_atr)
 
     projected_sl_pct = (atr * MEME_TRADE_ATR_SL_MULTIPLIER) / entry_price * 100 if entry_price > 0 else float("inf")
-    if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT:
-        return  # 同主流幣邏輯：停損距離本身已經不正常暴走，不適合套這套風險模型
+    if projected_sl_pct > MAX_SANE_STOP_LOSS_PCT or projected_sl_pct < MIN_SANE_STOP_LOSS_PCT:
+        return  # 同主流幣邏輯：停損距離太寬或太窄都跳過，見 MIN/MAX_SANE_STOP_LOSS_PCT 說明
 
     opened_signal: Optional[dict] = None
     async with state.lock:

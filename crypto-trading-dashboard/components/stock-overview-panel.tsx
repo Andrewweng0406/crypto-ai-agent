@@ -180,7 +180,7 @@ export function StockOverviewPanel() {
 
       {gex && gex.hasData && <GexWallChart data={gex} />}
 
-      {gex && gex.hasData && <OptionStrategyCard gex={gex} recentSweeps={relevantSweeps} />}
+      {gex && gex.hasData && <OptionStrategyCard key={gex.symbol} gex={gex} recentSweeps={relevantSweeps} />}
 
       {research && (
         <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-card p-5">
