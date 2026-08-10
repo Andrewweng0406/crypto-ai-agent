@@ -3,8 +3,12 @@
 import { Star, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type OptionsGexData, type USStockSignalState, type WhaleSweepItem, formatPrice } from "@/lib/signals"
+import { type DataTrustItem } from "@/lib/risk"
 import { calculateMarketTrend } from "@/lib/confluence"
 import { ConfluenceBadge } from "@/components/confluence-badge"
+import { DataTrustPanel } from "@/components/data-trust-panel"
+import { PositionRiskCalculator } from "@/components/position-risk-calculator"
+import { TradeJournal } from "@/components/trade-journal"
 
 export interface ModuleSummary {
   key: string
@@ -22,6 +26,7 @@ interface FavoritesOverviewProps {
   usStocksError?: string
   whaleSweepItems: WhaleSweepItem[]
   moduleSummaries: ModuleSummary[]
+  dataTrustItems: DataTrustItem[]
   onSelectModule: (key: string) => void
   onSelectOptions: (symbol: string) => void
   onSelectUSStock: (symbol: string) => void
@@ -44,6 +49,7 @@ export function FavoritesOverview({
   usStocksError,
   whaleSweepItems,
   moduleSummaries,
+  dataTrustItems,
   onSelectModule,
   onSelectOptions,
   onSelectUSStock,
@@ -58,11 +64,34 @@ export function FavoritesOverview({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Star className="size-4 text-amber-400" aria-hidden="true" />
-        彙整「📊 期權分析」與「美股 ORB」兩個模塊目前的自選清單，點卡片可跳去該分頁看完整細節；
-        新增／移除標的請到各自分頁的搜尋框操作。
-      </div>
+      <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="rounded-2xl border border-border/60 bg-card p-5">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Star className="size-4 text-amber-400" aria-hidden="true" />
+            AI Risk & Decision Terminal
+          </div>
+          <h1 className="mt-3 text-2xl font-bold tracking-tight text-foreground md:text-3xl">先保護本金，再考慮訊號</h1>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+            首頁優先呈現資料可信度、目前持倉數、單筆風險與交易紀錄。使用者看到的每一塊資料都必須能回答：
+            來源是否可靠、最多可能虧多少、這是不是情緒交易。
+          </p>
+        </div>
+        <div className="rounded-2xl border border-border/60 bg-card p-5">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">民眾保護規則</h2>
+          <ul className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
+            <li>• 不用範例交易填畫面。</li>
+            <li>• 樣本不足就標示，不包裝成高勝率。</li>
+            <li>• 單筆風險先算清楚，再討論方向。</li>
+          </ul>
+        </div>
+      </section>
+
+      <DataTrustPanel items={dataTrustItems} />
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <PositionRiskCalculator />
+        <TradeJournal />
+      </section>
 
       {moduleSummaries.length > 0 && (
         <section className="grid grid-cols-2 gap-2 sm:grid-cols-4">

@@ -134,10 +134,10 @@ export function TradingChatbot({ contextSymbol }: TradingChatbotProps) {
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 z-50 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_0_6px] shadow-primary/15 transition-transform hover:scale-105"
+          className="z-50 ml-auto mr-3 mb-3 flex size-11 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_0_3px] shadow-primary/15 transition-transform hover:scale-105 sm:fixed sm:bottom-6 sm:right-6 sm:mb-0 sm:mr-0 sm:size-14 sm:shadow-[0_0_0_6px]"
           aria-label="開啟 AI 交易軍師助理"
         >
-          <MessageCircle className="size-6" aria-hidden="true" />
+          <MessageCircle className="size-5 sm:size-6" aria-hidden="true" />
           {hasUnseenBroadcast && (
             <span
               className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-amber-400 ring-2 ring-background"

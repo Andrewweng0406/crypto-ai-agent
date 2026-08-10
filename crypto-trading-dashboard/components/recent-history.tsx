@@ -5,9 +5,10 @@ interface RecentHistoryProps {
   history: HistorySignal[]
   stats?: HistoryStats
   error?: string
+  isLoading?: boolean
 }
 
-export function RecentHistory({ history, stats, error }: RecentHistoryProps) {
+export function RecentHistory({ history, stats, error, isLoading }: RecentHistoryProps) {
   return (
     <div className="flex h-full flex-col gap-3 rounded-2xl border border-border/60 bg-card p-5">
       <div className="flex items-center justify-between">
@@ -27,9 +28,15 @@ export function RecentHistory({ history, stats, error }: RecentHistoryProps) {
         </p>
       )}
 
-      {!error && history.length === 0 && (
+      {!error && isLoading && history.length === 0 && (
         <p className="rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
-          尚無已結算的歷史訊號。
+          正在同步真實歷史紀錄…
+        </p>
+      )}
+
+      {!error && !isLoading && history.length === 0 && (
+        <p className="rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
+          尚無已結算的歷史訊號；這裡不會顯示範例或假資料。
         </p>
       )}
 

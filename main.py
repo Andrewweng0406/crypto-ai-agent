@@ -462,6 +462,21 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
 DEBUG_FORCE_SIGNAL = os.environ.get("DEBUG_FORCE_SIGNAL", "").strip().lower() or None
 DEBUG_FORCE_SYMBOL = os.environ.get("DEBUG_FORCE_SYMBOL", "").strip() or MAJOR_SYMBOLS[0]
 
+DEPLOY_ENV = (
+    os.environ.get("APP_ENV")
+    or os.environ.get("ENV")
+    or os.environ.get("NODE_ENV")
+    or os.environ.get("VERCEL_ENV")
+    or os.environ.get("RAILWAY_ENVIRONMENT_NAME")
+    or ""
+).strip().lower()
+PRODUCTION_LIKE_ENVS = {"production", "prod", "staging", "stage"}
+
+if DEBUG_FORCE_SIGNAL and DEPLOY_ENV in PRODUCTION_LIKE_ENVS:
+    raise RuntimeError(
+        "DEBUG_FORCE_SIGNAL 只能在本機開發環境使用；正式或 staging 環境不得產生測試訊號。"
+    )
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",

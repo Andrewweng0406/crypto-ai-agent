@@ -34,7 +34,6 @@ import {
   adaptUSStockHistory,
   adaptUSStockList,
   adaptWhaleSweep,
-  fallbackHistory,
   formatPrice,
   formatTime,
   type BackendHistoryResponse,
@@ -78,6 +77,8 @@ import { TradingChatbot } from "@/components/trading-chatbot"
 import { WatchlistEditor } from "@/components/watchlist-editor"
 import { FavoritesOverview } from "@/components/favorites-overview"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { RiskDecisionPanel } from "@/components/risk-decision-panel"
+import { buildDefaultTrustItems } from "@/lib/risk"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -266,7 +267,11 @@ export function TradeDashboard() {
     refreshInterval: 30000,
   })
 
-  const { data: rawHistory, error: historyError } = useSWR<BackendHistoryResponse>("/api/history", fetcher, {
+  const {
+    data: rawHistory,
+    error: historyError,
+    isLoading: historyLoading,
+  } = useSWR<BackendHistoryResponse>("/api/history", fetcher, {
     refreshInterval: 15000,
   })
 
@@ -346,7 +351,9 @@ export function TradeDashboard() {
     [rawOptionsGex],
   )
   const whaleSweepItems = useMemo(() => (rawWhaleSweep ? adaptWhaleSweep(rawWhaleSweep) : []), [rawWhaleSweep])
-  const { trades: history, stats } = rawHistory ? adaptHistory(rawHistory) : fallbackHistory
+  const { trades: history, stats } = rawHistory
+    ? adaptHistory(rawHistory)
+    : { trades: [], stats: { totalTrades: 0, wins: 0, losses: 0, winRatePct: 0 } }
 
   // ⭐ 我的關注戰情室：每個模塊貢獻一行最精簡的摘要，點下去直接跳去對應
   // 分頁——這樣打開網站第一眼看到的是「整個系統現在的狀態」，不用先猜十個
@@ -478,6 +485,16 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? !optionsGexError && !!rawOptionsGex
                 : !signalsError && !!rawSignals
+  const dataTrustItems = useMemo(
+    () =>
+      buildDefaultTrustItems({
+        backendConnected: isConnected,
+        hasHistory: stats.totalTrades > 0,
+        hasOptionsData: optionsGexData.underlyings.some((item) => item.hasData),
+        hasUSStockData: usStockData.stocks.some((item) => item.currentPrice !== null),
+      }),
+    [isConnected, stats.totalTrades, optionsGexData.underlyings, usStockData.stocks],
+  )
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 
   return (
@@ -565,6 +582,7 @@ export function TradeDashboard() {
           usStocksError={usStocksError?.message}
           whaleSweepItems={whaleSweepItems}
           moduleSummaries={moduleSummaries}
+          dataTrustItems={dataTrustItems}
           onSelectModule={(key) => setMode(key as TabKey)}
           onSelectOptions={(symbol) => {
             setSelectedSymbol(symbol)
@@ -621,7 +639,10 @@ export function TradeDashboard() {
             </div>
             <div className="flex flex-col gap-5">
               {selectedMemeTrade && selectedMemeTrade.status === "OPEN" && selectedMemeTrade.signal && (
-                <PriceLevels signal={selectedMemeTrade.signal} />
+                <>
+                  <RiskDecisionPanel signal={selectedMemeTrade.signal} />
+                  <PriceLevels signal={selectedMemeTrade.signal} />
+                </>
               )}
             </div>
           </div>
@@ -713,7 +734,10 @@ export function TradeDashboard() {
             </div>
             <div className="flex flex-col gap-5">
               {selectedUSStock && selectedUSStock.status === "OPEN" && selectedUSStock.signal && (
-                <PriceLevels signal={selectedUSStock.signal} />
+                <>
+                  <RiskDecisionPanel signal={selectedUSStock.signal} />
+                  <PriceLevels signal={selectedUSStock.signal} />
+                </>
               )}
             </div>
           </div>
@@ -868,8 +892,13 @@ export function TradeDashboard() {
               )}
             </div>
             <div className="flex flex-col gap-5">
-              {selected && selected.status === "OPEN" && selected.signal && <PriceLevels signal={selected.signal} />}
-              <RecentHistory history={history} stats={stats} error={historyError?.message} />
+              {selected && selected.status === "OPEN" && selected.signal && (
+                <>
+                  <RiskDecisionPanel signal={selected.signal} />
+                  <PriceLevels signal={selected.signal} />
+                </>
+              )}
+              <RecentHistory history={history} stats={stats} error={historyError?.message} isLoading={historyLoading} />
             </div>
           </div>
 

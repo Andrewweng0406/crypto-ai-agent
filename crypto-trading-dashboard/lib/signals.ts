@@ -361,19 +361,6 @@ export function adaptHistory(raw: BackendHistoryResponse): { trades: HistorySign
   }
 }
 
-// Fallback data shown before the first real API response lands (SWR
-// `fallbackData`), so the UI never flashes empty on first paint.
-export const fallbackHistory: { trades: HistorySignal[]; stats: HistoryStats } = {
-  trades: [
-    { id: "h1", symbol: "ETH/USDT:USDT", side: "Long", outcome: "Hit TP", pnl: 42.8, closedAt: "2026-07-07T10:12:00Z" },
-    { id: "h2", symbol: "SOL/USDT:USDT", side: "Short", outcome: "Hit SL", pnl: -18.4, closedAt: "2026-07-07T08:47:00Z" },
-    { id: "h3", symbol: "BTC/USDT:USDT", side: "Long", outcome: "Hit TP", pnl: 63.1, closedAt: "2026-07-06T22:30:00Z" },
-    { id: "h4", symbol: "XRP/USDT:USDT", side: "Short", outcome: "Hit TP", pnl: 27.5, closedAt: "2026-07-06T17:05:00Z" },
-    { id: "h5", symbol: "AVAX/USDT:USDT", side: "Long", outcome: "Hit SL", pnl: -12.9, closedAt: "2026-07-06T13:22:00Z" },
-  ],
-  stats: { totalTrades: 5, wins: 3, losses: 2, winRatePct: 60 },
-}
-
 // ---------------------------------------------------------------------------
 // 美股 ORB 當沖（獨立模塊，實驗性策略）：跟上面的主流幣/迷因幣完全分開，
 // 有自己的開盤區間/RVOL/大盤濾網欄位，OPEN 狀態下的 signal 形狀則刻意沿用
