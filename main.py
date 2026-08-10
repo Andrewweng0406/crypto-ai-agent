@@ -87,6 +87,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from database import init_database, insert_ingest_event, is_database_enabled, upsert_data_source_health
 import gex_engine
 import yfinance as yf
 import options_strategy_engine
@@ -554,6 +555,7 @@ def _record_loop_outcome(loop_name: str, success: bool) -> Optional[str]:
 
 
 DATA_SOURCE_HEALTH_STATUS = Literal["starting", "ok", "stale", "error", "disabled"]
+DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS = 30
 
 
 class DataSourceHealthState:
@@ -4283,6 +4285,27 @@ async def price_monitor_loop(exchange_pool: dict) -> None:
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
 
 
+async def flush_data_source_health_to_database_once() -> None:
+    if not is_database_enabled():
+        return
+
+    async with state.lock:
+        rows = [item.model_dump(mode="json") for item in state.get_data_source_health()]
+    await asyncio.to_thread(upsert_data_source_health, rows)
+
+
+async def data_source_health_db_flush_loop() -> None:
+    if not is_database_enabled():
+        return
+
+    while True:
+        try:
+            await flush_data_source_health_to_database_once()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("同步資料源健康狀態到 Postgres 失敗：%s", exc)
+        await asyncio.sleep(DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS)
+
+
 # ---------------------------------------------------------------------------
 # 8.5 狀態快照（存檔／讀回，讓重啟不會弄丟正在追蹤中的部位）
 # ---------------------------------------------------------------------------
@@ -5362,6 +5385,10 @@ class WatchlistAddRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    database_ready = await asyncio.to_thread(init_database)
+    if database_ready:
+        logger.info("Postgres 持久化已啟用")
+
     exchange_pool = {name: make_exchange(name) for name in EXCHANGE_CANDIDATES}
     exchange_pool_ref.clear()
     exchange_pool_ref.update(exchange_pool)
@@ -5421,6 +5448,9 @@ async def lifespan(app: FastAPI):
         "🔥 迷因當沖背景迴圈已啟動（標的：%s，180天回測樣本數達統計門檻的兩檔）",
         ", ".join(s.split("/")[0] for s in MEME_TRADE_SYMBOLS),
     )
+    data_source_health_flush_task = asyncio.create_task(data_source_health_db_flush_loop())
+    if is_database_enabled():
+        logger.info("資料源健康狀態 Postgres 同步迴圈已啟動（每 %d 秒）", DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS)
 
     try:
         yield
@@ -5432,15 +5462,17 @@ async def lifespan(app: FastAPI):
         options_task.cancel()
         meme_trade_task.cancel()
         rsi2_meanrev_task.cancel()
+        data_source_health_flush_task.cancel()
         for task in (
             monitor_task, us_stock_task, news_agent_task, squeeze_mode_task, options_task, meme_trade_task,
-            rsi2_meanrev_task,
+            rsi2_meanrev_task, data_source_health_flush_task,
         ):
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         save_state_snapshot()  # 正常關機前再存一次，盡量減少關機瞬間的資料落差
+        await flush_data_source_health_to_database_once()
         exchange_pool_ref.clear()
         for exchange in exchange_pool.values():
             await exchange.close()
@@ -5940,6 +5972,14 @@ async def ingest_whale_sweep(
         state.mark_data_source_success("whale_sweep_ingest", records_seen=len(state.whale_sweep_feed))
         moomoo_online = state.moomoo_online
 
+    await asyncio.to_thread(
+        insert_ingest_event,
+        "whale_sweep_ingest",
+        "duplicate" if is_duplicate else "accepted",
+        record,
+        symbol=item.symbol,
+    )
+
     if not is_duplicate:
         side_label = {"buy": "偏多掃貨", "sell": "偏空掃貨", None: "方向不明"}[item.side]
         await push_assistant_broadcast(
@@ -5968,6 +6008,7 @@ async def whale_sweep_heartbeat(x_api_key: Optional[str] = Header(None, alias="X
         state.moomoo_last_seen_monotonic = time.monotonic()
         state.mark_data_source_success("whale_sweep_ingest", records_seen=len(state.whale_sweep_feed))
         moomoo_online = state.moomoo_online
+    await asyncio.to_thread(insert_ingest_event, "whale_sweep_ingest", "heartbeat", {}, symbol=None)
     return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
 
 
@@ -5992,6 +6033,7 @@ async def ingest_liquidation(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         state.mark_data_source_success("liquidation_ingest", records_seen=len(state.liquidation_walls))
+    await asyncio.to_thread(insert_ingest_event, "liquidation_ingest", "snapshot", item.model_dump(), symbol=symbol)
     return LiquidationIngestResponse(accepted=True)
 
 
@@ -6038,6 +6080,7 @@ async def ingest_research(
     async with state.lock:
         state.research_bundles[symbol] = payload
         state.mark_data_source_success("research_ingest", records_seen=len(state.research_bundles))
+    await asyncio.to_thread(insert_ingest_event, "research_ingest", "snapshot", item.model_dump(), symbol=symbol)
     return ResearchIngestResponse(accepted=True)
 
 
@@ -7037,6 +7080,7 @@ async def health_check() -> dict:
         "meme_universe": state.meme_universe,
         "meme_alert_count": len(state.meme_alerts),
         "last_tick_at": state.last_tick_at,
+        "database_enabled": is_database_enabled(),
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -6,8 +6,8 @@ security, observability, and test coverage for `crypto-ai-agent`.
 Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
-- `./venv/bin/python -m pytest -q` passed: 195 tests.
-- Railway production `web` and `frontend` are running commit `b366b4f`.
+- `./venv/bin/python -m pytest -q` passed: 197 tests.
+- Railway production `web` and `frontend` are running commit `a360fee`.
 
 ## Executive Verdict
 
@@ -19,24 +19,31 @@ automated E2E coverage, observability, and production configuration.
 
 ## P0 - Must Fix Before Serious Public Use
 
-### 1. Replace JSONL/memory/localStorage with a database
+### 1. Replace JSONL/memory/localStorage with a database - first phase started
 
 Evidence:
-- `main.py` stores trade/news logs in JSONL paths and stores a broad state
+- `database.py` now defines the initial Postgres migration for
+  `signal_snapshots`, `trade_history`, `watchlists`, `journal_entries`,
+  `risk_settings`, `data_source_health`, and `ingest_events`.
+- FastAPI startup now runs the migration when `DATABASE_URL` is configured.
+- Data-source health is flushed to Postgres every 30 seconds, and local ingest
+  endpoints write audit rows into `ingest_events` when Postgres is enabled.
+- `main.py` still stores trade/news logs in JSONL paths and stores a broad state
   snapshot in `logs/state_snapshot.json`.
 - `main.py` comments explicitly describe the snapshot as "not a real database".
 - `TradeJournal` persists user journal entries only in `localStorage`.
 
-Risk:
+Remaining risk:
 - Restart/deploy race can lose or corrupt state.
 - Multiple service replicas would diverge.
 - Users cannot access the same journal/watchlist across devices.
-- There is no queryable audit history.
+- Trade history, watchlists, journal entries, risk settings, and snapshots are
+  not yet read/written through Postgres.
 
-Fix:
-- Add Postgres tables for `signal_snapshots`, `trade_history`,
-  `watchlists`, `journal_entries`, `risk_settings`, `data_source_health`,
-  and `ingest_events`.
+Next fix:
+- Provision Postgres in Railway and set `DATABASE_URL`.
+- Migrate trade history, watchlists, journal entries, and risk settings to use
+  Postgres as the primary source of truth.
 - Keep JSONL only as optional local debug export, not product state.
 
 ### 2. Split background workers from the API process
@@ -69,12 +76,14 @@ Evidence:
   the old inferred labels kept only as a fallback if the health endpoint fails.
 
 Remaining risk:
-- The health state is still process memory, so deploy/restart resets it.
+- The health state is still served from process memory, but it is now flushed to
+  Postgres when `DATABASE_URL` is configured.
 - Worker split and Postgres persistence are still needed to make this durable
   across replicas and restarts.
 
 Next fix:
-- Persist data-source health and ingest events in Postgres.
+- Read initial data-source health from Postgres on boot after Postgres is
+  provisioned.
 - Add stale-source alerting in Sentry/Telegram after observability is installed.
 
 ## P1 - Required For Production Reliability
