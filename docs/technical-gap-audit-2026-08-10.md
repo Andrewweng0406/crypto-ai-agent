@@ -7,7 +7,9 @@ Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
 - `./venv/bin/python -m pytest -q` passed: 197 tests.
-- Railway production `web` and `frontend` are running commit `a360fee`.
+- Railway production `web` and `frontend` are running commit `86e182d`.
+- Railway Postgres is provisioned and connected to `web`; `/api/health`
+  reports `database_enabled=true`.
 
 ## Executive Verdict
 
@@ -25,9 +27,14 @@ Evidence:
 - `database.py` now defines the initial Postgres migration for
   `signal_snapshots`, `trade_history`, `watchlists`, `journal_entries`,
   `risk_settings`, `data_source_health`, and `ingest_events`.
-- FastAPI startup now runs the migration when `DATABASE_URL` is configured.
+- Railway Postgres is now provisioned, and `web` has `DATABASE_URL` set via a
+  Railway service variable reference.
+- FastAPI startup now runs the migration when `DATABASE_URL` is configured; the
+  production database has migration `1` applied and all 7 core tables present.
 - Data-source health is flushed to Postgres every 30 seconds, and local ingest
   endpoints write audit rows into `ingest_events` when Postgres is enabled.
+  Production verification showed `data_source_health` and `ingest_events`
+  receiving rows.
 - `main.py` still stores trade/news logs in JSONL paths and stores a broad state
   snapshot in `logs/state_snapshot.json`.
 - `main.py` comments explicitly describe the snapshot as "not a real database".
@@ -41,7 +48,6 @@ Remaining risk:
   not yet read/written through Postgres.
 
 Next fix:
-- Provision Postgres in Railway and set `DATABASE_URL`.
 - Migrate trade history, watchlists, journal entries, and risk settings to use
   Postgres as the primary source of truth.
 - Keep JSONL only as optional local debug export, not product state.
