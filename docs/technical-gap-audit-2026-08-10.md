@@ -93,18 +93,22 @@ Fix:
 - Add Playwright tests for homepage, tab switching, mobile viewport, risk
   calculator, journal local persistence, API offline state, and no fake history.
 
-### 5. Add CI
+### 5. Add CI - first phase completed
 
 Evidence:
-- No `.github/workflows` files are present.
+- `.github/workflows/ci.yml` now runs backend tests and frontend
+  typecheck/build on `push` to `main` and on pull requests.
+- GitHub Actions run `31363773215` completed successfully for commit
+  `f866153d1e8e2717ed7162ac4ca241a8fa247fb8`.
 
-Risk:
-- GitHub/Railway can deploy code that was not automatically typechecked,
-  built, and tested.
+Remaining risk:
+- Railway still deploys directly from GitHub pushes; deployment is not yet
+  blocked on CI success.
+- E2E/browser tests and dependency audits are not yet part of CI.
 
-Fix:
-- Add GitHub Actions for Python tests, frontend typecheck/build, dependency
-  audit, and Playwright E2E.
+Next fix:
+- Add Playwright E2E.
+- Add dependency audit jobs.
 - Make Railway deploy only after CI passes, if possible.
 
 ### 6. Add observability and alerting
