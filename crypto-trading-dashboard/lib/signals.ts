@@ -127,6 +127,26 @@ export interface BackendSignalListResponse {
   tracked_symbols: string[]
 }
 
+export type BackendDataSourceHealthStatus = "starting" | "ok" | "stale" | "error" | "disabled"
+
+export interface BackendDataSourceHealthItem {
+  source: string
+  label: string
+  status: BackendDataSourceHealthStatus
+  last_success_at: string | null
+  last_error_at: string | null
+  last_error: string | null
+  latency_ms: number | null
+  stale_after_seconds: number
+  records_seen: number
+  is_stale: boolean
+}
+
+export interface BackendDataSourceHealthResponse {
+  sources: BackendDataSourceHealthItem[]
+  updated_at: string
+}
+
 // Meme radar is a separate feature from the trading signals above: it has no
 // side/TP/SL/leverage, just "this coin's volume just spiked" alerts.
 export interface BackendMemeAlert {

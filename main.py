@@ -553,6 +553,78 @@ def _record_loop_outcome(loop_name: str, success: bool) -> Optional[str]:
     return None
 
 
+DATA_SOURCE_HEALTH_STATUS = Literal["starting", "ok", "stale", "error", "disabled"]
+
+
+class DataSourceHealthState:
+    def __init__(
+        self,
+        source: str,
+        label: str,
+        stale_after_seconds: int,
+        *,
+        status: DATA_SOURCE_HEALTH_STATUS = "starting",
+        enabled: bool = True,
+    ) -> None:
+        self.source = source
+        self.label = label
+        self.stale_after_seconds = stale_after_seconds
+        self.status: DATA_SOURCE_HEALTH_STATUS = status if enabled else "disabled"
+        self.enabled = enabled
+        self.last_success_at: Optional[str] = None
+        self.last_success_monotonic: Optional[float] = None
+        self.last_error_at: Optional[str] = None
+        self.last_error: Optional[str] = None
+        self.latency_ms: Optional[float] = None
+        self.records_seen = 0
+
+    def mark_success(self, *, latency_ms: Optional[float] = None, records_seen: Optional[int] = None) -> None:
+        if not self.enabled:
+            return
+        self.status = "ok"
+        self.last_success_at = datetime.now(timezone.utc).isoformat()
+        self.last_success_monotonic = time.monotonic()
+        self.last_error = None
+        if latency_ms is not None:
+            self.latency_ms = round(latency_ms, 2)
+        if records_seen is not None:
+            self.records_seen = max(0, records_seen)
+
+    def mark_error(self, error: Exception | str, *, latency_ms: Optional[float] = None) -> None:
+        if not self.enabled:
+            return
+        self.status = "error"
+        self.last_error_at = datetime.now(timezone.utc).isoformat()
+        self.last_error = str(error)[:240]
+        if latency_ms is not None:
+            self.latency_ms = round(latency_ms, 2)
+
+    def as_response_item(self, now_monotonic: float) -> "DataSourceHealthItem":
+        is_stale = False
+        status: DATA_SOURCE_HEALTH_STATUS = self.status
+        if (
+            self.enabled
+            and self.status == "ok"
+            and self.last_success_monotonic is not None
+            and now_monotonic - self.last_success_monotonic > self.stale_after_seconds
+        ):
+            is_stale = True
+            status = "stale"
+
+        return DataSourceHealthItem(
+            source=self.source,
+            label=self.label,
+            status=status,
+            last_success_at=self.last_success_at,
+            last_error_at=self.last_error_at,
+            last_error=self.last_error,
+            latency_ms=self.latency_ms,
+            stale_after_seconds=self.stale_after_seconds,
+            records_seen=self.records_seen,
+            is_stale=is_stale,
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2. Pydantic 回應模型
 # ---------------------------------------------------------------------------
@@ -589,6 +661,24 @@ class SignalResponse(BaseModel):
     squeeze_oi_growth_1h_pct: Optional[float] = None
     squeeze_rvol: Optional[float] = None
     squeeze_funding_rate: Optional[float] = None
+
+
+class DataSourceHealthItem(BaseModel):
+    source: str
+    label: str
+    status: DATA_SOURCE_HEALTH_STATUS
+    last_success_at: Optional[str] = None
+    last_error_at: Optional[str] = None
+    last_error: Optional[str] = None
+    latency_ms: Optional[float] = None
+    stale_after_seconds: int
+    records_seen: int
+    is_stale: bool
+
+
+class DataSourceHealthResponse(BaseModel):
+    sources: List[DataSourceHealthItem]
+    updated_at: str
 
 
 class SignalListResponse(BaseModel):
@@ -1223,6 +1313,39 @@ class AppState:
 
         self.last_tick_at: Optional[str] = None
         self.last_deep_scan_at: float = 0.0  # time.monotonic() 時間戳
+        self.data_source_health: Dict[str, DataSourceHealthState] = {
+            "crypto_market": DataSourceHealthState("crypto_market", "主流幣/市場掃描", 180),
+            "meme_radar": DataSourceHealthState("meme_radar", "迷因雷達", 600),
+            "meme_trade": DataSourceHealthState("meme_trade", "迷因當沖", 180),
+            "us_stock_orb": DataSourceHealthState("us_stock_orb", "美股 ORB", 900),
+            "news_agent": DataSourceHealthState("news_agent", "新聞輿情", 1800),
+            "squeeze_mode": DataSourceHealthState("squeeze_mode", "Squeeze/OI", 900),
+            "options_gex": DataSourceHealthState(
+                "options_gex",
+                "期權/GEX",
+                1800,
+                enabled=OPTIONS_ANALYTICS_ENABLED,
+            ),
+            "rsi2_meanrev": DataSourceHealthState("rsi2_meanrev", "RSI2 均值回歸", 900),
+            "whale_sweep_ingest": DataSourceHealthState(
+                "whale_sweep_ingest",
+                "期權大單回傳",
+                MOOMOO_ONLINE_TIMEOUT_SECONDS,
+                enabled=WHALE_SWEEP_API_KEY is not None,
+            ),
+            "liquidation_ingest": DataSourceHealthState(
+                "liquidation_ingest",
+                "清算牆回傳",
+                MOOMOO_ONLINE_TIMEOUT_SECONDS,
+                enabled=WHALE_SWEEP_API_KEY is not None,
+            ),
+            "research_ingest": DataSourceHealthState(
+                "research_ingest",
+                "機構研究回傳",
+                MOOMOO_ONLINE_TIMEOUT_SECONDS,
+                enabled=WHALE_SWEEP_API_KEY is not None,
+            ),
+        }
 
         # 迷因幣雷達（獨立狀態，跟主流幣的 symbols/history 完全分開）
         self.meme_states: Dict[str, MemeAlertState] = {}
@@ -1288,6 +1411,32 @@ class AppState:
         # STOCK_MEANREV_SYMBOLS 這5檔已驗證過的標的）
         self.rsi2_states: Dict[str, RSI2StockState] = {}
         self.rsi2_history: Deque[dict] = deque(maxlen=RSI2_HISTORY_MAX_LEN)
+
+    def mark_data_source_success(
+        self,
+        source: str,
+        *,
+        latency_ms: Optional[float] = None,
+        records_seen: Optional[int] = None,
+    ) -> None:
+        health = self.data_source_health.get(source)
+        if health:
+            health.mark_success(latency_ms=latency_ms, records_seen=records_seen)
+
+    def mark_data_source_error(
+        self,
+        source: str,
+        error: Exception | str,
+        *,
+        latency_ms: Optional[float] = None,
+    ) -> None:
+        health = self.data_source_health.get(source)
+        if health:
+            health.mark_error(error, latency_ms=latency_ms)
+
+    def get_data_source_health(self) -> List[DataSourceHealthItem]:
+        now_monotonic = time.monotonic()
+        return [health.as_response_item(now_monotonic) for health in self.data_source_health.values()]
 
     def get_options_state(self, symbol: str) -> OptionsState:
         if symbol not in self.options_states:
@@ -2510,6 +2659,7 @@ async def us_stock_orb_loop() -> None:
 
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             now_et = datetime.now(tz)
             is_active = _is_us_market_active(now_et)
@@ -2547,9 +2697,17 @@ async def us_stock_orb_loop() -> None:
                     await scan_us_stock_orb(display_name, ticker_symbol)
                 last_scan_at = now_monotonic
 
+            async with state.lock:
+                state.mark_data_source_success(
+                    "us_stock_orb",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=len(prices),
+                )
             failure_notification = _record_loop_outcome("美股 ORB 迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("美股 ORB 背景迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                state.mark_data_source_error("us_stock_orb", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("美股 ORB 迴圈", success=False)
 
         if failure_notification:
@@ -2770,6 +2928,7 @@ async def meme_trade_loop(exchange_pool: dict) -> None:
 
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             try:
                 prices = await fetch_tickers_batch(exchange_pool, MEME_TRADE_SYMBOLS)
@@ -2798,9 +2957,17 @@ async def meme_trade_loop(exchange_pool: dict) -> None:
                     await scan_meme_trade_symbol(exchange_pool, display_name, symbol)
                 last_scan_at = now_monotonic
 
+            async with state.lock:
+                state.mark_data_source_success(
+                    "meme_trade",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=len(prices),
+                )
             failure_notification = _record_loop_outcome("迷因當沖迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("迷因當沖背景迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                state.mark_data_source_error("meme_trade", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("迷因當沖迴圈", success=False)
 
         if failure_notification:
@@ -3079,11 +3246,20 @@ async def news_agent_loop() -> None:
 
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             await scan_news_agent(openai_client)
+            async with state.lock:
+                state.mark_data_source_success(
+                    "news_agent",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=len(state.news_items),
+                )
             failure_notification = _record_loop_outcome("AI新聞Agent迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("AI新聞Agent背景迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                state.mark_data_source_error("news_agent", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("AI新聞Agent迴圈", success=False)
 
         if failure_notification:
@@ -3335,11 +3511,20 @@ async def squeeze_mode_loop(exchange_pool: dict) -> None:
     """背景永久迴圈：每 SQUEEZE_OI_POLL_INTERVAL_SECONDS 秒跑一次 scan_squeeze_mode。"""
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             await scan_squeeze_mode(exchange_pool)
+            async with state.lock:
+                state.mark_data_source_success(
+                    "squeeze_mode",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=len(state.squeeze_feed),
+                )
             failure_notification = _record_loop_outcome("Squeeze模式迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("Squeeze模式背景迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                state.mark_data_source_error("squeeze_mode", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("Squeeze模式迴圈", success=False)
 
         if failure_notification:
@@ -3515,13 +3700,21 @@ async def options_analytics_loop() -> None:
             continue
 
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             await scan_options_analytics()
+            async with state.lock:
+                state.mark_data_source_success(
+                    "options_gex",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=sum(1 for item in state.options_states.values() if item.last_updated),
+                )
             failure_notification = _record_loop_outcome("期權分析迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("期權分析背景迴圈發生錯誤：%s", exc)
             async with state.lock:
                 state.options_data_source_ok = False
+                state.mark_data_source_error("options_gex", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("期權分析迴圈", success=False)
 
         if failure_notification:
@@ -3672,6 +3865,7 @@ async def rsi2_meanrev_loop() -> None:
 
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             now_et = datetime.now(tz)
             if not _is_us_market_active(now_et):
@@ -3681,9 +3875,17 @@ async def rsi2_meanrev_loop() -> None:
             for display_name in STOCK_MEANREV_SYMBOLS:
                 await scan_rsi2_stock(display_name)
 
+            async with state.lock:
+                state.mark_data_source_success(
+                    "rsi2_meanrev",
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                    records_seen=len(state.rsi2_states),
+                )
             failure_notification = _record_loop_outcome("RSI2均值回歸迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("RSI2均值回歸背景迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                state.mark_data_source_error("rsi2_meanrev", exc, latency_ms=(time.monotonic() - started_at) * 1000)
             failure_notification = _record_loop_outcome("RSI2均值回歸迴圈", success=False)
 
         if failure_notification:
@@ -4059,11 +4261,20 @@ async def price_monitor_loop(exchange_pool: dict) -> None:
     """背景永久迴圈：每 TICK_INTERVAL_SECONDS 秒跑一次 run_tick，任何例外都會被記錄下來但不中斷服務。"""
     while True:
         failure_notification: Optional[str] = None
+        started_at = time.monotonic()
         try:
             await run_tick(exchange_pool)
+            async with state.lock:
+                elapsed_ms = (time.monotonic() - started_at) * 1000
+                state.mark_data_source_success("crypto_market", latency_ms=elapsed_ms, records_seen=len(state.symbols))
+                state.mark_data_source_success("meme_radar", latency_ms=elapsed_ms, records_seen=len(state.meme_states))
             failure_notification = _record_loop_outcome("主流幣監控迴圈", success=True)
         except Exception as exc:  # noqa: BLE001 - 背景迴圈需持續存活，統一捕捉並記錄錯誤
             logger.error("背景監控迴圈發生錯誤：%s", exc)
+            async with state.lock:
+                elapsed_ms = (time.monotonic() - started_at) * 1000
+                state.mark_data_source_error("crypto_market", exc, latency_ms=elapsed_ms)
+                state.mark_data_source_error("meme_radar", exc, latency_ms=elapsed_ms)
             failure_notification = _record_loop_outcome("主流幣監控迴圈", success=False)
 
         if failure_notification:
@@ -5726,6 +5937,7 @@ async def ingest_whale_sweep(
             record["delta"] = _estimate_whale_sweep_delta(item.symbol, item.strike, item.expiry, item.option_type)
             state.whale_sweep_feed.appendleft(record)
         state.moomoo_last_seen_monotonic = time.monotonic()
+        state.mark_data_source_success("whale_sweep_ingest", records_seen=len(state.whale_sweep_feed))
         moomoo_online = state.moomoo_online
 
     if not is_duplicate:
@@ -5754,6 +5966,7 @@ async def whale_sweep_heartbeat(x_api_key: Optional[str] = Header(None, alias="X
 
     async with state.lock:
         state.moomoo_last_seen_monotonic = time.monotonic()
+        state.mark_data_source_success("whale_sweep_ingest", records_seen=len(state.whale_sweep_feed))
         moomoo_online = state.moomoo_online
     return WhaleSweepIngestResponse(accepted=True, moomoo_online=moomoo_online)
 
@@ -5778,6 +5991,7 @@ async def ingest_liquidation(
             "points": [b.model_dump() for b in item.buckets],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        state.mark_data_source_success("liquidation_ingest", records_seen=len(state.liquidation_walls))
     return LiquidationIngestResponse(accepted=True)
 
 
@@ -5823,6 +6037,7 @@ async def ingest_research(
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     async with state.lock:
         state.research_bundles[symbol] = payload
+        state.mark_data_source_success("research_ingest", records_seen=len(state.research_bundles))
     return ResearchIngestResponse(accepted=True)
 
 
@@ -6824,6 +7039,17 @@ async def health_check() -> dict:
         "last_tick_at": state.last_tick_at,
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/data-sources/health", response_model=DataSourceHealthResponse)
+async def data_sources_health() -> DataSourceHealthResponse:
+    """
+    細粒度資料源健康狀態。這個端點不是只證明 API 活著，而是回報每個背景資料源
+    最近一次成功/失敗、延遲、目前是否過期，前端可信度面板必須以這裡為準。
+    """
+    async with state.lock:
+        sources = state.get_data_source_health()
+    return DataSourceHealthResponse(sources=sources, updated_at=datetime.now(timezone.utc).isoformat())
 
 
 # ---------------------------------------------------------------------------

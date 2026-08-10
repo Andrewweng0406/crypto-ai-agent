@@ -36,6 +36,7 @@ import {
   adaptWhaleSweep,
   formatPrice,
   formatTime,
+  type BackendDataSourceHealthResponse,
   type BackendHistoryResponse,
   type BackendLiquidationWallsResponse,
   type BackendMemeRadarResponse,
@@ -78,7 +79,7 @@ import { WatchlistEditor } from "@/components/watchlist-editor"
 import { FavoritesOverview } from "@/components/favorites-overview"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { RiskDecisionPanel } from "@/components/risk-decision-panel"
-import { buildDefaultTrustItems } from "@/lib/risk"
+import { buildDefaultTrustItems, buildTrustItemsFromHealth } from "@/lib/risk"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -303,6 +304,11 @@ export function TradeDashboard() {
     fetcher,
     { refreshInterval: 20000 },
   )
+  const { data: rawDataSourceHealth } = useSWR<BackendDataSourceHealthResponse>(
+    isOverviewMode ? "/api/data-sources/health" : null,
+    fetcher,
+    { refreshInterval: 15000 },
+  )
 
   const { data: rawLiquidationWalls } = useSWR<BackendLiquidationWallsResponse>(
     mode === "major" ? "/api/market/liquidation-walls" : null,
@@ -485,7 +491,7 @@ export function TradeDashboard() {
               : isOptionsMode
                 ? !optionsGexError && !!rawOptionsGex
                 : !signalsError && !!rawSignals
-  const dataTrustItems = useMemo(
+  const fallbackDataTrustItems = useMemo(
     () =>
       buildDefaultTrustItems({
         backendConnected: isConnected,
@@ -494,6 +500,10 @@ export function TradeDashboard() {
         hasUSStockData: usStockData.stocks.some((item) => item.currentPrice !== null),
       }),
     [isConnected, stats.totalTrades, optionsGexData.underlyings, usStockData.stocks],
+  )
+  const dataTrustItems = useMemo(
+    () => (rawDataSourceHealth ? buildTrustItemsFromHealth(rawDataSourceHealth) : fallbackDataTrustItems),
+    [fallbackDataTrustItems, rawDataSourceHealth],
   )
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 

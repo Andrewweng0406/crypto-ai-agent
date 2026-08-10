@@ -1,4 +1,4 @@
-import { type Signal } from "@/lib/signals"
+import { type BackendDataSourceHealthItem, type BackendDataSourceHealthResponse, type Signal } from "@/lib/signals"
 
 export type RiskLevel = "low" | "medium" | "high" | "critical"
 export type TrustLevel = "live" | "delayed" | "experimental" | "offline"
@@ -117,6 +117,52 @@ export function buildDefaultTrustItems(input: {
       detail: input.hasUSStockData ? "真實 K 線，但樣本數仍需累積" : "目前沒有可用美股資料",
     },
   ]
+}
+
+const trustedSourceOrder = [
+  "crypto_market",
+  "meme_radar",
+  "meme_trade",
+  "us_stock_orb",
+  "options_gex",
+  "whale_sweep_ingest",
+  "liquidation_ingest",
+  "news_agent",
+  "squeeze_mode",
+  "rsi2_meanrev",
+  "research_ingest",
+]
+
+function trustLevelFromHealth(status: BackendDataSourceHealthItem["status"]): TrustLevel {
+  if (status === "ok") return "live"
+  if (status === "stale") return "delayed"
+  if (status === "starting") return "experimental"
+  return "offline"
+}
+
+function formatHealthDetail(item: BackendDataSourceHealthItem): string {
+  if (item.status === "disabled") return "環境變數未啟用，產品不會顯示替代資料"
+  if (item.status === "error") return item.last_error ? `最近失敗：${item.last_error}` : "最近一輪資料源失敗"
+  if (item.status === "starting") return "服務已啟動，等待第一輪真實資料"
+  if (item.status === "stale") return `最後成功已超過 ${Math.round(item.stale_after_seconds / 60)} 分鐘，請視為延遲資料`
+
+  const latency = item.latency_ms === null ? null : `${Math.round(item.latency_ms)}ms`
+  const count = item.records_seen > 0 ? `${item.records_seen} 筆` : "已同步"
+  return latency ? `${count}，延遲 ${latency}` : count
+}
+
+export function buildTrustItemsFromHealth(response: BackendDataSourceHealthResponse): DataTrustItem[] {
+  const ordered = [...response.sources].sort((a, b) => {
+    const aIndex = trustedSourceOrder.indexOf(a.source)
+    const bIndex = trustedSourceOrder.indexOf(b.source)
+    return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex)
+  })
+
+  return ordered.map((item) => ({
+    label: item.label,
+    level: trustLevelFromHealth(item.status),
+    detail: formatHealthDetail(item),
+  }))
 }
 
 export function estimatePositionRisk(input: {
