@@ -4370,6 +4370,30 @@ async def hydrate_watchlists_from_database() -> None:
         await asyncio.to_thread(seed_watchlist_if_empty, "us_stock", us_stock_seed)
 
 
+async def seed_trade_history_from_snapshot() -> None:
+    if not is_database_enabled():
+        return
+
+    async with state.lock:
+        strategy_records = [
+            (TRADE_STRATEGY_MAIN, list(state.history)),
+            (TRADE_STRATEGY_US_ORB, list(state.us_stock_history)),
+            (TRADE_STRATEGY_RSI2, list(state.rsi2_history)),
+            (TRADE_STRATEGY_MEME, list(state.meme_trade_history)),
+        ]
+
+    seed_tasks = [
+        asyncio.to_thread(insert_trade_history, strategy, record)
+        for strategy, records in strategy_records
+        for record in records
+    ]
+    if not seed_tasks:
+        return
+
+    await asyncio.gather(*seed_tasks)
+    logger.info("已將 state snapshot 中的 %d 筆交易歷史同步到 Postgres（含去重）", len(seed_tasks))
+
+
 # ---------------------------------------------------------------------------
 # 8.5 狀態快照（存檔／讀回，讓重啟不會弄丟正在追蹤中的部位）
 # ---------------------------------------------------------------------------
@@ -5487,6 +5511,7 @@ async def lifespan(app: FastAPI):
 
     load_state_snapshot()  # 嘗試恢復重啟前的部位/歷史紀錄，須在背景迴圈開始前完成
     await hydrate_watchlists_from_database()
+    await seed_trade_history_from_snapshot()
 
     monitor_task = asyncio.create_task(price_monitor_loop(exchange_pool))
     logger.info(

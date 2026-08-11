@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 import main
 from main import app
@@ -89,3 +90,24 @@ def test_history_falls_back_to_memory_when_database_read_fails(monkeypatch):
     body = resp.json()
     assert body["trades"][0]["symbol"] == "ETH/USDT:USDT"
     assert body["stats"]["losses"] == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_trade_history_is_seeded_to_database(monkeypatch):
+    inserted = []
+    main.state.history.appendleft({"symbol": "BTC/USDT:USDT", "opened_at": "2026-01-01T00:00:00+00:00"})
+    main.state.us_stock_history.appendleft({"symbol": "NVDA", "opened_at": "2026-01-01T00:00:00+00:00"})
+    main.state.rsi2_history.appendleft({"symbol": "AAPL", "opened_at": "2026-01-01T00:00:00+00:00"})
+    main.state.meme_trade_history.appendleft({"symbol": "WIF/USDT", "opened_at": "2026-01-01T00:00:00+00:00"})
+
+    monkeypatch.setattr(main, "is_database_enabled", lambda: True)
+    monkeypatch.setattr(main, "insert_trade_history", lambda strategy, record: inserted.append((strategy, record["symbol"])))
+
+    await main.seed_trade_history_from_snapshot()
+
+    assert set(inserted) == {
+        (main.TRADE_STRATEGY_MAIN, "BTC/USDT:USDT"),
+        (main.TRADE_STRATEGY_US_ORB, "NVDA"),
+        (main.TRADE_STRATEGY_RSI2, "AAPL"),
+        (main.TRADE_STRATEGY_MEME, "WIF/USDT"),
+    }
