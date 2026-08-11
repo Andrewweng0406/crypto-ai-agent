@@ -36,6 +36,7 @@ import {
   adaptWhaleSweep,
   formatPrice,
   formatTime,
+  type BackendBackgroundJobHealthResponse,
   type BackendDataSourceHealthResponse,
   type BackendHistoryResponse,
   type BackendLiquidationWallsResponse,
@@ -79,7 +80,7 @@ import { WatchlistEditor } from "@/components/watchlist-editor"
 import { FavoritesOverview } from "@/components/favorites-overview"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { RiskDecisionPanel } from "@/components/risk-decision-panel"
-import { buildDefaultTrustItems, buildTrustItemsFromHealth } from "@/lib/risk"
+import { buildBackgroundJobTrustItem, buildDefaultTrustItems, buildTrustItemsFromHealth } from "@/lib/risk"
 
 const fetcher = (url: string) =>
   fetch(url).then(async (r) => {
@@ -309,6 +310,11 @@ export function TradeDashboard() {
     fetcher,
     { refreshInterval: 15000 },
   )
+  const { data: rawBackgroundJobHealth } = useSWR<BackendBackgroundJobHealthResponse>(
+    isOverviewMode ? "/api/background-jobs/health" : null,
+    fetcher,
+    { refreshInterval: 15000 },
+  )
 
   const { data: rawLiquidationWalls } = useSWR<BackendLiquidationWallsResponse>(
     mode === "major" ? "/api/market/liquidation-walls" : null,
@@ -502,8 +508,11 @@ export function TradeDashboard() {
     [isConnected, stats.totalTrades, optionsGexData.underlyings, usStockData.stocks],
   )
   const dataTrustItems = useMemo(
-    () => (rawDataSourceHealth ? buildTrustItemsFromHealth(rawDataSourceHealth) : fallbackDataTrustItems),
-    [fallbackDataTrustItems, rawDataSourceHealth],
+    () => {
+      const sourceItems = rawDataSourceHealth ? buildTrustItemsFromHealth(rawDataSourceHealth) : fallbackDataTrustItems
+      return rawBackgroundJobHealth ? [...sourceItems, buildBackgroundJobTrustItem(rawBackgroundJobHealth)] : sourceItems
+    },
+    [fallbackDataTrustItems, rawBackgroundJobHealth, rawDataSourceHealth],
   )
   const statusLabel = activeError ? "Backend offline" : activeLoading ? "Syncing…" : "Connected"
 

@@ -281,6 +281,52 @@ def list_data_source_health() -> Optional[list[dict]]:
         return None
 
 
+def list_job_leases() -> Optional[list[dict]]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        job_name, owner_id, acquired_at, heartbeat_at,
+                        expires_at, expires_at > now() AS is_active
+                    FROM job_leases
+                    ORDER BY job_name
+                    """
+                )
+                return [
+                    {
+                        "job_name": job_name,
+                        "owner_id": owner_id,
+                        "acquired_at": (
+                            acquired_at.isoformat()
+                            if hasattr(acquired_at, "isoformat")
+                            else acquired_at
+                        ),
+                        "heartbeat_at": (
+                            heartbeat_at.isoformat()
+                            if hasattr(heartbeat_at, "isoformat")
+                            else heartbeat_at
+                        ),
+                        "expires_at": (
+                            expires_at.isoformat()
+                            if hasattr(expires_at, "isoformat")
+                            else expires_at
+                        ),
+                        "is_active": is_active,
+                    }
+                    for (
+                        job_name, owner_id, acquired_at, heartbeat_at, expires_at, is_active,
+                    ) in cur.fetchall()
+                ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 job_leases 失敗：%s", exc)
+        return None
+
+
 def try_acquire_job_lease(job_name: str, owner_id: str, ttl_seconds: int) -> bool:
     if not DATABASE_URL:
         return True

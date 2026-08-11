@@ -147,6 +147,24 @@ export interface BackendDataSourceHealthResponse {
   updated_at: string
 }
 
+export type BackendBackgroundJobLeaseStatus = "active" | "expired"
+
+export interface BackendBackgroundJobLeaseItem {
+  job_name: string
+  label: string
+  status: BackendBackgroundJobLeaseStatus
+  owner_fingerprint: string
+  acquired_at: string | null
+  heartbeat_at: string | null
+  expires_at: string | null
+}
+
+export interface BackendBackgroundJobHealthResponse {
+  jobs: BackendBackgroundJobLeaseItem[]
+  database_enabled: boolean
+  updated_at: string
+}
+
 // Meme radar is a separate feature from the trading signals above: it has no
 // side/TP/SL/leverage, just "this coin's volume just spiked" alerts.
 export interface BackendMemeAlert {

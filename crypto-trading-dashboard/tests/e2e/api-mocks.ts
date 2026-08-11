@@ -135,6 +135,32 @@ export async function mockDashboardApis(page: Page) {
         ],
       })
     }
+    if (path === "/api/background-jobs/health") {
+      return json(route, {
+        updated_at: now,
+        database_enabled: true,
+        jobs: [
+          {
+            job_name: "price_monitor_loop",
+            label: "主流幣/市場掃描",
+            status: "active",
+            owner_fingerprint: "abc123def0",
+            acquired_at: now,
+            heartbeat_at: now,
+            expires_at: now,
+          },
+          {
+            job_name: "us_stock_orb_loop",
+            label: "美股 ORB",
+            status: "active",
+            owner_fingerprint: "abc123def0",
+            acquired_at: now,
+            heartbeat_at: now,
+            expires_at: now,
+          },
+        ],
+      })
+    }
     if (path === "/api/risk-settings") {
       if (request.method() === "PUT") {
         const payload = request.postDataJSON()

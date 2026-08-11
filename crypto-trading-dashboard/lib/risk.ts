@@ -1,4 +1,9 @@
-import { type BackendDataSourceHealthItem, type BackendDataSourceHealthResponse, type Signal } from "@/lib/signals"
+import {
+  type BackendBackgroundJobHealthResponse,
+  type BackendDataSourceHealthItem,
+  type BackendDataSourceHealthResponse,
+  type Signal,
+} from "@/lib/signals"
 
 export type RiskLevel = "low" | "medium" | "high" | "critical"
 export type TrustLevel = "live" | "delayed" | "experimental" | "offline"
@@ -163,6 +168,41 @@ export function buildTrustItemsFromHealth(response: BackendDataSourceHealthRespo
     level: trustLevelFromHealth(item.status),
     detail: formatHealthDetail(item),
   }))
+}
+
+export function buildBackgroundJobTrustItem(response: BackendBackgroundJobHealthResponse): DataTrustItem {
+  if (!response.database_enabled) {
+    return {
+      label: "背景任務",
+      level: "offline",
+      detail: "Postgres 未啟用，無法跨 replica 防止重複掃描",
+    }
+  }
+
+  if (response.jobs.length === 0) {
+    return {
+      label: "背景任務",
+      level: "experimental",
+      detail: "租約表尚無紀錄，等待第一輪 scanner heartbeat",
+    }
+  }
+
+  const expired = response.jobs.filter((job) => job.status === "expired")
+  if (expired.length > 0) {
+    const names = expired.slice(0, 3).map((job) => job.label).join("、")
+    return {
+      label: "背景任務",
+      level: "offline",
+      detail: `${expired.length} 個 scanner 租約過期：${names}`,
+    }
+  }
+
+  const owners = new Set(response.jobs.map((job) => job.owner_fingerprint))
+  return {
+    label: "背景任務",
+    level: "live",
+    detail: `${response.jobs.length} 個 scanner 租約有效，${owners.size} 個執行實例持有`,
+  }
 }
 
 export function estimatePositionRisk(input: {

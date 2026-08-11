@@ -64,6 +64,7 @@ AI 交易訊號後端服務
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -96,6 +97,7 @@ from database import (
     insert_trade_history,
     is_database_enabled,
     list_data_source_health,
+    list_job_leases,
     list_journal_entries,
     list_trade_history,
     load_risk_settings,
@@ -138,6 +140,15 @@ WORKER_INSTANCE_ID = ":".join(
     )
     if part
 )
+BACKGROUND_JOB_LABELS = {
+    "price_monitor_loop": "主流幣/市場掃描",
+    "meme_trade_loop": "迷因當沖",
+    "us_stock_orb_loop": "美股 ORB",
+    "news_agent_loop": "新聞輿情",
+    "squeeze_mode_loop": "Squeeze/OI",
+    "options_analytics_loop": "期權/GEX",
+    "rsi2_meanrev_loop": "RSI2 均值回歸",
+}
 
 MAJOR_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]  # 固定監控的核心資產
 
@@ -783,6 +794,22 @@ class DataSourceHealthItem(BaseModel):
 
 class DataSourceHealthResponse(BaseModel):
     sources: List[DataSourceHealthItem]
+    updated_at: str
+
+
+class BackgroundJobLeaseItem(BaseModel):
+    job_name: str
+    label: str
+    status: Literal["active", "expired"]
+    owner_fingerprint: str
+    acquired_at: Optional[str] = None
+    heartbeat_at: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class BackgroundJobHealthResponse(BaseModel):
+    jobs: List[BackgroundJobLeaseItem]
+    database_enabled: bool
     updated_at: str
 
 
@@ -4506,6 +4533,31 @@ async def get_data_source_health_response_items() -> List[DataSourceHealthItem]:
         return [items_by_source[item.source] for item in state_items]
 
 
+def _job_owner_fingerprint(owner_id: str) -> str:
+    if not owner_id:
+        return "unknown"
+    return hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:10]
+
+
+async def get_background_job_health_items() -> List[BackgroundJobLeaseItem]:
+    records = await asyncio.to_thread(list_job_leases)
+    if not records:
+        return []
+
+    return [
+        BackgroundJobLeaseItem(
+            job_name=str(record.get("job_name", "")),
+            label=BACKGROUND_JOB_LABELS.get(str(record.get("job_name", "")), str(record.get("job_name", ""))),
+            status="active" if record.get("is_active") else "expired",
+            owner_fingerprint=_job_owner_fingerprint(str(record.get("owner_id", ""))),
+            acquired_at=record.get("acquired_at"),
+            heartbeat_at=record.get("heartbeat_at"),
+            expires_at=record.get("expires_at"),
+        )
+        for record in records
+    ]
+
+
 async def data_source_health_db_flush_loop() -> None:
     if not is_database_enabled():
         return
@@ -7561,6 +7613,20 @@ async def data_sources_health() -> DataSourceHealthResponse:
     """
     sources = await get_data_source_health_response_items()
     return DataSourceHealthResponse(sources=sources, updated_at=datetime.now(timezone.utc).isoformat())
+
+
+@app.get("/api/background-jobs/health", response_model=BackgroundJobHealthResponse)
+async def background_jobs_health() -> BackgroundJobHealthResponse:
+    """
+    背景掃描任務租約狀態。這讓前端與營運檢查能直接看到哪個 scanner
+    目前有有效 owner，避免多 replica 或 worker split 後重複執行卻沒人發現。
+    """
+    jobs = await get_background_job_health_items()
+    return BackgroundJobHealthResponse(
+        jobs=jobs,
+        database_enabled=is_database_enabled(),
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 # ---------------------------------------------------------------------------

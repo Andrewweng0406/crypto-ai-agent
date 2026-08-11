@@ -120,3 +120,36 @@ def test_data_source_health_endpoint_prefers_database_records(monkeypatch):
     assert sources["crypto_market"]["records_seen"] == 123
     assert sources["crypto_market"]["latency_ms"] == 42.42
     assert "meme_radar" in sources
+
+
+def test_background_jobs_health_reports_lease_status(monkeypatch):
+    monkeypatch.setattr(main, "is_database_enabled", lambda: True)
+    monkeypatch.setattr(main, "list_job_leases", lambda: [
+        {
+            "job_name": "price_monitor_loop",
+            "owner_id": "deployment:web:abc",
+            "acquired_at": "2026-08-11T18:00:00+00:00",
+            "heartbeat_at": "2026-08-11T18:01:00+00:00",
+            "expires_at": "2026-08-11T18:03:00+00:00",
+            "is_active": True,
+        },
+        {
+            "job_name": "news_agent_loop",
+            "owner_id": "deployment:web:abc",
+            "acquired_at": "2026-08-11T17:00:00+00:00",
+            "heartbeat_at": "2026-08-11T17:01:00+00:00",
+            "expires_at": "2026-08-11T17:20:00+00:00",
+            "is_active": False,
+        },
+    ])
+
+    resp = client.get("/api/background-jobs/health")
+    body = resp.json()
+    jobs = {item["job_name"]: item for item in body["jobs"]}
+
+    assert resp.status_code == 200
+    assert body["database_enabled"] is True
+    assert jobs["price_monitor_loop"]["label"] == "主流幣/市場掃描"
+    assert jobs["price_monitor_loop"]["status"] == "active"
+    assert len(jobs["price_monitor_loop"]["owner_fingerprint"]) == 10
+    assert jobs["news_agent_loop"]["status"] == "expired"

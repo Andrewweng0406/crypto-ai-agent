@@ -20,6 +20,7 @@ def test_database_disabled_without_url(monkeypatch):
     assert database.list_trade_history("main_signal") is None
     assert database.load_risk_settings() is None
     assert database.upsert_risk_settings(1000, 1, 5) is None
+    assert database.list_job_leases() is None
     assert database.try_acquire_job_lease("price_monitor_loop", "test-owner", 30) is True
 
 
@@ -43,4 +44,5 @@ def test_second_migration_declares_job_leases_table():
 
     assert "CREATE TABLE IF NOT EXISTS job_leases" in migration_sql
     assert "job_name TEXT PRIMARY KEY" in migration_sql
+    assert "heartbeat_at TIMESTAMPTZ NOT NULL" in migration_sql
     assert "expires_at TIMESTAMPTZ NOT NULL" in migration_sql
