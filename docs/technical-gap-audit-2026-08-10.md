@@ -9,7 +9,9 @@ Current validation:
 - `npm run e2e` passed: 6 Playwright checks across desktop and mobile.
 - `npm audit --audit-level=high` passed: 0 vulnerabilities after upgrading
   Next.js to `16.3.0`.
-- `./venv/bin/python -m pytest -q` passed: 209 tests.
+- `python -m pip_audit -r requirements.txt --strict` passed: 0 known
+  vulnerabilities after upgrading FastAPI to `0.141.1` / Starlette to `1.6.0`.
+- `./venv/bin/python -m pytest -q` passed: 211 tests.
 - Railway production `web` and `frontend` should be smoke-tested after each
   pushed commit; the latest local validation includes the checks above.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
@@ -136,17 +138,20 @@ Next fix:
 Evidence:
 - `.github/workflows/ci.yml` now runs backend tests and frontend
   dependency audit/typecheck/build/E2E on `push` to `main` and on pull requests.
+- The backend job now also runs `pip-audit` against `requirements.txt`, and the
+  current backend dependency set reports 0 known vulnerabilities.
 - GitHub Actions should complete successfully for each pushed commit before
   treating the deployment as verified.
 
 Remaining risk:
 - Railway still deploys directly from GitHub pushes; deployment is not yet
   blocked on CI success.
-- Python dependency audits are not yet part of CI.
+- Dependency audit coverage is now present, but there is not yet automated
+  Dependabot/Renovate-style update PR creation.
 
 Next fix:
-- Add Python dependency audit jobs.
 - Make Railway deploy only after CI passes, if possible.
+- Add Dependabot/Renovate for Python and npm dependency update PRs.
 
 ### 6. Add observability and alerting
 
@@ -247,14 +252,17 @@ Fix:
 ### 12. Dependency/security audit
 
 Evidence:
-- No automated `npm audit`, `pip-audit`, or Dependabot workflow found.
+- CI now runs `npm audit --audit-level=high` for the frontend and `pip-audit`
+  for backend `requirements.txt`.
+- No Dependabot/Renovate workflow is configured yet.
 
 Risk:
-- Vulnerable dependencies may remain unnoticed.
+- Vulnerable dependencies should now fail CI once committed, but available
+  security updates still require manual discovery unless Dependabot/Renovate is
+  added.
 
 Fix:
 - Add Dependabot.
-- Add `npm audit --audit-level=high` and `pip-audit` to CI.
 
 ## Recommended Build Order
 
