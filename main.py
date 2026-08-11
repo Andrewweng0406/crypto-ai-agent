@@ -3337,11 +3337,18 @@ def _resolve_perp_symbol(symbol: str, exchange) -> Optional[str]:
     的標的是現貨符號（如 PEPE/USDT），嘗試解析出對應的永續合約符號，該交易所沒
     掛牌的話回傳 None（呼叫端會標示「無合約市場」，不是錯誤）。
     """
+    def supports_open_interest(market: Optional[dict]) -> bool:
+        if not market:
+            return False
+        if market.get("contract") or market.get("swap") or market.get("future"):
+            return True
+        return str(market.get("type") or "").lower() in {"swap", "future"}
+
     if symbol.endswith(":USDT"):
-        return symbol
+        return symbol if supports_open_interest(exchange.markets.get(symbol)) else None
     base = symbol.split("/")[0]
     candidate = f"{base}/USDT:USDT"
-    return candidate if candidate in exchange.markets else None
+    return candidate if supports_open_interest(exchange.markets.get(candidate)) else None
 
 
 def compute_oi_growth_pct(oi_history: Deque[float], lookback_samples: int) -> Optional[float]:

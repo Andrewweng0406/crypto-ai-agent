@@ -1,6 +1,7 @@
 """多空情緒擠壓爆破模式：OI成長率計算、RVOL/突破判斷、藍/黃/綠燈邏輯。"""
 
 from collections import deque
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,7 @@ from main import (
     compute_oi_growth_pct,
     compute_squeeze_price_volume,
     compute_squeeze_tier,
+    _resolve_perp_symbol,
 )
 
 
@@ -38,6 +40,26 @@ def test_oi_growth_computed_correctly():
 def test_oi_growth_none_when_old_value_is_zero():
     history = deque([0.0, 0.0, 0.0, 0.0, 100.0], maxlen=SQUEEZE_OI_HISTORY_LEN)
     assert compute_oi_growth_pct(history, 3) is None
+
+
+def test_resolve_perp_symbol_requires_contract_market():
+    exchange = SimpleNamespace(markets={
+        "DOGE/USDT": {"type": "spot", "spot": True},
+        "DOGE/USDT:USDT": {"type": "swap", "swap": True, "contract": True},
+    })
+
+    assert _resolve_perp_symbol("DOGE/USDT", exchange) == "DOGE/USDT:USDT"
+    assert _resolve_perp_symbol("DOGE/USDT:USDT", exchange) == "DOGE/USDT:USDT"
+
+
+def test_resolve_perp_symbol_rejects_spot_only_market():
+    exchange = SimpleNamespace(markets={
+        "SHIB/USDT": {"type": "spot", "spot": True},
+        "SHIB/USDT:USDT": {"type": "spot", "spot": True},
+    })
+
+    assert _resolve_perp_symbol("SHIB/USDT", exchange) is None
+    assert _resolve_perp_symbol("SHIB/USDT:USDT", exchange) is None
 
 
 def _make_squeeze_df(n=50, volume_spike=True, breakout=True):
