@@ -11,6 +11,8 @@ backend.log
 crypto-trading-dashboard/node_modules/
 crypto-trading-dashboard/.next/
 crypto-trading-dashboard/.env.local
+crypto-trading-dashboard/test-results/
+crypto-trading-dashboard/playwright-report/
 
 # --- 本機 launchd 自動重啟：wrapper腳本會含有真實API金鑰 ---
 scripts/run_liquidation_listener.sh

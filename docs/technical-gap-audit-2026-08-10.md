@@ -6,8 +6,12 @@ security, observability, and test coverage for `crypto-ai-agent`.
 Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
+- `npm run e2e` passed: 6 Playwright checks across desktop and mobile.
+- `npm audit --audit-level=high` passed: 0 vulnerabilities after upgrading
+  Next.js to `16.3.0`.
 - `./venv/bin/python -m pytest -q` passed: 209 tests.
-- Railway production `web` and `frontend` are running commit `d77684f`.
+- Railway production `web` and `frontend` should be smoke-tested after each
+  pushed commit; the latest local validation includes the checks above.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
   reports `database_enabled=true`.
 
@@ -16,8 +20,8 @@ Current validation:
 The product is technically usable as a beta, but not production-grade for
 larger public usage yet. The strongest parts are strategy-specific backend
 tests, honest no-mock UI states, Railway deployment, and basic API health.
-The main technical gaps are persistence, worker isolation, data-source health,
-automated E2E coverage, observability, and production configuration.
+The main technical gaps are worker isolation, observability, production
+configuration, backend dependency auditing, and broader E2E coverage.
 
 ## P0 - Must Fix Before Serious Public Use
 
@@ -106,36 +110,42 @@ Next fix:
 
 ## P1 - Required For Production Reliability
 
-### 4. Add automated E2E tests
+### 4. Add automated E2E tests - first phase completed
 
 Evidence:
-- There is no Playwright/Cypress config or frontend E2E test files.
-- Manual screenshots were used for smoke testing.
+- Playwright is now installed and configured.
+- `tests/e2e/dashboard.spec.ts` covers overview rendering, no mock/demo
+  placeholders, risk settings backend persistence, tab switching, and mobile
+  horizontal overflow.
+- CI now installs Chromium and runs `npm run e2e`.
+- Next.js has been upgraded to `16.3.0`, clearing the high-severity frontend
+  advisories reported by npm audit.
 
-Risk:
-- Mobile overlap, broken tabs, stale fallback states, and API-offline behavior
-  can regress without warning.
+Remaining risk:
+- E2E uses deterministic mocked API responses; production smoke tests are still
+  needed after Railway deploys.
+- Backtest, chatbot streaming, watchlist mutation, journal delete, stock
+  overview, and options strategy workflows need dedicated browser coverage.
 
-Fix:
-- Add Playwright tests for homepage, tab switching, mobile viewport, risk
-  calculator, journal local persistence, API offline state, and no fake history.
+Next fix:
+- Add Playwright coverage for watchlist mutation, journal delete, backend
+  offline/local cache states, option strategy cards, and backtest validation.
 
 ### 5. Add CI - first phase completed
 
 Evidence:
 - `.github/workflows/ci.yml` now runs backend tests and frontend
-  typecheck/build on `push` to `main` and on pull requests.
-- GitHub Actions run `31363773215` completed successfully for commit
-  `f866153d1e8e2717ed7162ac4ca241a8fa247fb8`.
+  dependency audit/typecheck/build/E2E on `push` to `main` and on pull requests.
+- GitHub Actions should complete successfully for each pushed commit before
+  treating the deployment as verified.
 
 Remaining risk:
 - Railway still deploys directly from GitHub pushes; deployment is not yet
   blocked on CI success.
-- E2E/browser tests and dependency audits are not yet part of CI.
+- Python dependency audits are not yet part of CI.
 
 Next fix:
-- Add Playwright E2E.
-- Add dependency audit jobs.
+- Add Python dependency audit jobs.
 - Make Railway deploy only after CI passes, if possible.
 
 ### 6. Add observability and alerting
