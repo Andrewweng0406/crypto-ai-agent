@@ -140,18 +140,18 @@ Evidence:
   dependency audit/typecheck/build/E2E on `push` to `main` and on pull requests.
 - The backend job now also runs `pip-audit` against `requirements.txt`, and the
   current backend dependency set reports 0 known vulnerabilities.
+- Dependabot now checks backend Python dependencies, frontend npm dependencies,
+  and GitHub Actions weekly.
 - GitHub Actions should complete successfully for each pushed commit before
   treating the deployment as verified.
 
 Remaining risk:
 - Railway still deploys directly from GitHub pushes; deployment is not yet
   blocked on CI success.
-- Dependency audit coverage is now present, but there is not yet automated
-  Dependabot/Renovate-style update PR creation.
+- Dependency audit coverage and automated dependency update PRs are now present.
 
 Next fix:
 - Make Railway deploy only after CI passes, if possible.
-- Add Dependabot/Renovate for Python and npm dependency update PRs.
 
 ### 6. Add observability and alerting
 
@@ -254,15 +254,14 @@ Fix:
 Evidence:
 - CI now runs `npm audit --audit-level=high` for the frontend and `pip-audit`
   for backend `requirements.txt`.
-- No Dependabot/Renovate workflow is configured yet.
+- Dependabot is configured for pip, npm, and GitHub Actions.
 
 Risk:
-- Vulnerable dependencies should now fail CI once committed, but available
-  security updates still require manual discovery unless Dependabot/Renovate is
-  added.
+- Vulnerable dependencies should now fail CI once committed, and routine update
+  PRs should surface available patches automatically.
 
 Fix:
-- Add Dependabot.
+- Review and merge Dependabot PRs only after CI passes.
 
 ## Recommended Build Order
 
