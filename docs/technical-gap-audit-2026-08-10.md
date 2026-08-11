@@ -6,7 +6,7 @@ security, observability, and test coverage for `crypto-ai-agent`.
 Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
-- `./venv/bin/python -m pytest -q` passed: 197 tests.
+- `./venv/bin/python -m pytest -q` passed: 201 tests.
 - Railway production `web` and `frontend` are running commit `86e182d`.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
   reports `database_enabled=true`.
@@ -35,21 +35,23 @@ Evidence:
   endpoints write audit rows into `ingest_events` when Postgres is enabled.
   Production verification showed `data_source_health` and `ingest_events`
   receiving rows.
+- Watchlists now seed/read/write/delete through Postgres when `DATABASE_URL`
+  is enabled, with JSON snapshot retained as fallback.
+- Trade journal now has backend API routes and writes to Postgres in production;
+  localStorage is retained only as an offline cache/fallback.
 - `main.py` still stores trade/news logs in JSONL paths and stores a broad state
   snapshot in `logs/state_snapshot.json`.
 - `main.py` comments explicitly describe the snapshot as "not a real database".
-- `TradeJournal` persists user journal entries only in `localStorage`.
 
 Remaining risk:
 - Restart/deploy race can lose or corrupt state.
 - Multiple service replicas would diverge.
-- Users cannot access the same journal/watchlist across devices.
-- Trade history, watchlists, journal entries, risk settings, and snapshots are
-  not yet read/written through Postgres.
+- Trade history, risk settings, and snapshots are not yet read/written through
+  Postgres.
 
 Next fix:
-- Migrate trade history, watchlists, journal entries, and risk settings to use
-  Postgres as the primary source of truth.
+- Migrate trade history and risk settings to use Postgres as the primary source
+  of truth.
 - Keep JSONL only as optional local debug export, not product state.
 
 ### 2. Split background workers from the API process

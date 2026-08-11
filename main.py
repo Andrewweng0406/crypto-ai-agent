@@ -87,7 +87,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from database import init_database, insert_ingest_event, is_database_enabled, upsert_data_source_health
+from database import (
+    create_journal_entry,
+    delete_journal_entry,
+    delete_watchlist_item,
+    init_database,
+    insert_ingest_event,
+    is_database_enabled,
+    list_journal_entries,
+    load_watchlist,
+    seed_watchlist_if_empty,
+    upsert_data_source_health,
+    upsert_watchlist_item,
+)
 import gex_engine
 import yfinance as yf
 import options_strategy_engine
@@ -1413,6 +1425,7 @@ class AppState:
         # STOCK_MEANREV_SYMBOLS 這5檔已驗證過的標的）
         self.rsi2_states: Dict[str, RSI2StockState] = {}
         self.rsi2_history: Deque[dict] = deque(maxlen=RSI2_HISTORY_MAX_LEN)
+        self.journal_entries: Deque[dict] = deque(maxlen=50)
 
     def mark_data_source_success(
         self,
@@ -4306,6 +4319,32 @@ async def data_source_health_db_flush_loop() -> None:
         await asyncio.sleep(DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS)
 
 
+async def hydrate_watchlists_from_database() -> None:
+    if not is_database_enabled():
+        return
+
+    options_watchlist, us_stock_watchlist = await asyncio.gather(
+        asyncio.to_thread(load_watchlist, "options"),
+        asyncio.to_thread(load_watchlist, "us_stock"),
+    )
+
+    async with state.lock:
+        if options_watchlist:
+            state.options_watchlist = options_watchlist
+        else:
+            options_seed = dict(state.options_watchlist)
+
+        if us_stock_watchlist:
+            state.us_stock_watchlist = us_stock_watchlist
+        else:
+            us_stock_seed = dict(state.us_stock_watchlist)
+
+    if not options_watchlist:
+        await asyncio.to_thread(seed_watchlist_if_empty, "options", options_seed)
+    if not us_stock_watchlist:
+        await asyncio.to_thread(seed_watchlist_if_empty, "us_stock", us_stock_seed)
+
+
 # ---------------------------------------------------------------------------
 # 8.5 狀態快照（存檔／讀回，讓重啟不會弄丟正在追蹤中的部位）
 # ---------------------------------------------------------------------------
@@ -5379,6 +5418,26 @@ class WatchlistAddRequest(BaseModel):
     ticker: str  # yfinance美股代號（期權分析、美股ORB共用同一種格式，2026-07-27起）
 
 
+class JournalEntryResponse(BaseModel):
+    id: str
+    symbol: str
+    action: Literal["觀察", "模擬", "實盤"]
+    emotion: Literal["冷靜", "猶豫", "追高", "恐慌"]
+    note: str = ""
+    created_at: str
+
+
+class JournalListResponse(BaseModel):
+    entries: List[JournalEntryResponse]
+
+
+class JournalCreateRequest(BaseModel):
+    symbol: str
+    action: Literal["觀察", "模擬", "實盤"]
+    emotion: Literal["冷靜", "猶豫", "追高", "恐慌"]
+    note: str = ""
+
+
 # ---------------------------------------------------------------------------
 # 9. FastAPI 應用程式（lifespan 管理背景任務與交易所連線）
 # ---------------------------------------------------------------------------
@@ -5402,6 +5461,7 @@ async def lifespan(app: FastAPI):
             logger.warning("交易所 %s 載入市場資料失敗：%s", name, exc)
 
     load_state_snapshot()  # 嘗試恢復重啟前的部位/歷史紀錄，須在背景迴圈開始前完成
+    await hydrate_watchlists_from_database()
 
     monitor_task = asyncio.create_task(price_monitor_loop(exchange_pool))
     logger.info(
@@ -5866,6 +5926,7 @@ async def add_options_watchlist(body: WatchlistAddRequest, request: Request) -> 
     async with state.lock:
         state.options_watchlist[ticker] = ticker
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
+    await asyncio.to_thread(upsert_watchlist_item, "options", ticker, ticker)
     save_state_snapshot()
     return WatchlistResponse(items=items)
 
@@ -5881,10 +5942,70 @@ async def remove_options_watchlist(display_name: str, request: Request) -> Watch
     if _watchlist_is_rate_limited(client_ip):
         raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
     async with state.lock:
-        state.options_watchlist.pop(display_name.strip().upper(), None)
+        normalized_display_name = display_name.strip().upper()
+        state.options_watchlist.pop(normalized_display_name, None)
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.options_watchlist.items()]
+    await asyncio.to_thread(delete_watchlist_item, "options", normalized_display_name)
     save_state_snapshot()
     return WatchlistResponse(items=items)
+
+
+@app.get("/api/journal", response_model=JournalListResponse)
+async def get_journal_entries() -> JournalListResponse:
+    if is_database_enabled():
+        rows = await asyncio.to_thread(list_journal_entries, 50)
+        if rows is None:
+            raise HTTPException(status_code=503, detail="交易日記資料庫暫時不可用")
+        return JournalListResponse(entries=[JournalEntryResponse(**row) for row in rows])
+
+    async with state.lock:
+        entries = [JournalEntryResponse(**entry) for entry in state.journal_entries]
+    return JournalListResponse(entries=entries)
+
+
+@app.post("/api/journal", response_model=JournalEntryResponse)
+async def add_journal_entry(body: JournalCreateRequest) -> JournalEntryResponse:
+    symbol = body.symbol.strip().upper()
+    if not symbol or len(symbol) > 24:
+        raise HTTPException(status_code=400, detail="標的格式無效")
+    note = body.note.strip()[:500]
+
+    if is_database_enabled():
+        row = await asyncio.to_thread(create_journal_entry, symbol, body.action, body.emotion, note)
+        if row is None:
+            raise HTTPException(status_code=503, detail="交易日記資料庫暫時不可用")
+        return JournalEntryResponse(**row)
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "symbol": symbol,
+        "action": body.action,
+        "emotion": body.emotion,
+        "note": note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    async with state.lock:
+        state.journal_entries.appendleft(entry)
+    return JournalEntryResponse(**entry)
+
+
+@app.delete("/api/journal/{entry_id}")
+async def remove_journal_entry(entry_id: str) -> dict:
+    try:
+        uuid.UUID(entry_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日記 ID 格式無效") from None
+
+    if is_database_enabled():
+        await asyncio.to_thread(delete_journal_entry, entry_id)
+        return {"deleted": True}
+
+    async with state.lock:
+        state.journal_entries = deque(
+            [entry for entry in state.journal_entries if entry["id"] != entry_id],
+            maxlen=state.journal_entries.maxlen,
+        )
+    return {"deleted": True}
 
 
 @app.get("/api/options/whale-sweep", response_model=WhaleSweepResponse)
@@ -6494,6 +6615,7 @@ async def add_us_stock_watchlist(body: WatchlistAddRequest, request: Request) ->
     async with state.lock:
         state.us_stock_watchlist[ticker] = ticker
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
+    await asyncio.to_thread(upsert_watchlist_item, "us_stock", ticker, ticker)
     save_state_snapshot()
     return WatchlistResponse(items=items)
 
@@ -6510,8 +6632,10 @@ async def remove_us_stock_watchlist(display_name: str, request: Request) -> Watc
     if _watchlist_is_rate_limited(client_ip):
         raise HTTPException(status_code=429, detail=f"請求過於頻繁，每小時最多 {WATCHLIST_RATE_LIMIT_MAX_REQUESTS} 次，請稍後再試。")
     async with state.lock:
-        state.us_stock_watchlist.pop(display_name.strip().upper(), None)
+        normalized_display_name = display_name.strip().upper()
+        state.us_stock_watchlist.pop(normalized_display_name, None)
         items = [WatchlistItem(display_name=k, symbol=v) for k, v in state.us_stock_watchlist.items()]
+    await asyncio.to_thread(delete_watchlist_item, "us_stock", normalized_display_name)
     save_state_snapshot()
     return WatchlistResponse(items=items)
 

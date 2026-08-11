@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import uuid
+from datetime import date, datetime, timezone
 from typing import Iterable, Optional
 
 logger = logging.getLogger("trading_signal.database")
@@ -231,3 +233,173 @@ def insert_ingest_event(source: str, event_type: str, payload: dict, *, symbol: 
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("寫入 ingest_events 失敗：%s", exc)
+
+
+def load_watchlist(list_type: str) -> Optional[dict[str, str]]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT display_name, symbol
+                    FROM watchlists
+                    WHERE owner_key = 'global' AND list_type = %s
+                    ORDER BY display_name
+                    """,
+                    (list_type,),
+                )
+                return {display_name: symbol for display_name, symbol in cur.fetchall()}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 watchlists 失敗（%s）：%s", list_type, exc)
+        return None
+
+
+def upsert_watchlist_item(list_type: str, display_name: str, symbol: str) -> None:
+    if not DATABASE_URL:
+        return
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO watchlists (owner_key, list_type, display_name, symbol, updated_at)
+                    VALUES ('global', %s, %s, %s, now())
+                    ON CONFLICT (owner_key, list_type, display_name) DO UPDATE SET
+                        symbol = EXCLUDED.symbol,
+                        updated_at = now()
+                    """,
+                    (list_type, display_name, symbol),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 watchlist 失敗（%s:%s）：%s", list_type, display_name, exc)
+
+
+def delete_watchlist_item(list_type: str, display_name: str) -> None:
+    if not DATABASE_URL:
+        return
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM watchlists
+                    WHERE owner_key = 'global' AND list_type = %s AND display_name = %s
+                    """,
+                    (list_type, display_name),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("刪除 watchlist 失敗（%s:%s）：%s", list_type, display_name, exc)
+
+
+def seed_watchlist_if_empty(list_type: str, items: dict[str, str]) -> None:
+    if not DATABASE_URL:
+        return
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM watchlists WHERE owner_key = 'global' AND list_type = %s",
+                    (list_type,),
+                )
+                if cur.fetchone()[0] > 0:
+                    return
+                cur.executemany(
+                    """
+                    INSERT INTO watchlists (owner_key, list_type, display_name, symbol, updated_at)
+                    VALUES ('global', %(list_type)s, %(display_name)s, %(symbol)s, now())
+                    ON CONFLICT (owner_key, list_type, display_name) DO NOTHING
+                    """,
+                    [
+                        {"list_type": list_type, "display_name": display_name, "symbol": symbol}
+                        for display_name, symbol in items.items()
+                    ],
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("初始化 watchlist 失敗（%s）：%s", list_type, exc)
+
+
+def list_journal_entries(limit: int = 50) -> Optional[list[dict]]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text, symbol, direction, setup, note, created_at
+                    FROM journal_entries
+                    WHERE owner_key = 'global'
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [
+                    {
+                        "id": entry_id,
+                        "symbol": symbol,
+                        "action": direction,
+                        "emotion": setup,
+                        "note": note,
+                        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+                    }
+                    for entry_id, symbol, direction, setup, note, created_at in cur.fetchall()
+                ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 journal_entries 失敗：%s", exc)
+        return None
+
+
+def create_journal_entry(symbol: str, action: str, emotion: str, note: str) -> Optional[dict]:
+    if not DATABASE_URL:
+        return None
+
+    entry_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc)
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, owner_key, entry_date, symbol, direction, setup, result, note, created_at, updated_at
+                    )
+                    VALUES (%s, 'global', %s, %s, %s, %s, 'open', %s, %s, %s)
+                    """,
+                    (entry_id, date.fromisoformat(created_at.date().isoformat()), symbol, action, emotion, note, created_at, created_at),
+                )
+        return {
+            "id": entry_id,
+            "symbol": symbol,
+            "action": action,
+            "emotion": emotion,
+            "note": note,
+            "created_at": created_at.isoformat(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 journal_entries 失敗：%s", exc)
+        return None
+
+
+def delete_journal_entry(entry_id: str) -> bool:
+    if not DATABASE_URL:
+        return False
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM journal_entries WHERE owner_key = 'global' AND id = %s",
+                    (entry_id,),
+                )
+                return cur.rowcount > 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("刪除 journal_entries 失敗（%s）：%s", entry_id, exc)
+        return False

@@ -16,7 +16,31 @@ interface JournalEntry {
   createdAt: string
 }
 
+interface BackendJournalEntry {
+  id: string
+  symbol: string
+  action: JournalAction
+  emotion: JournalEmotion
+  note: string
+  created_at: string
+}
+
+interface BackendJournalResponse {
+  entries: BackendJournalEntry[]
+}
+
 const STORAGE_KEY = "weng-trade-journal"
+
+function adaptEntry(entry: BackendJournalEntry): JournalEntry {
+  return {
+    id: entry.id,
+    symbol: entry.symbol,
+    action: entry.action,
+    emotion: entry.emotion,
+    note: entry.note,
+    createdAt: entry.created_at,
+  }
+}
 
 export function TradeJournal() {
   const [entries, setEntries] = useState<JournalEntry[]>([])
@@ -24,19 +48,43 @@ export function TradeJournal() {
   const [action, setAction] = useState<JournalAction>("觀察")
   const [emotion, setEmotion] = useState<JournalEmotion>("冷靜")
   const [note, setNote] = useState("")
+  const [isOffline, setIsOffline] = useState(false)
+  const [hasLoaded, setHasLoaded] = useState(false)
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY)
-      if (raw) setEntries(JSON.parse(raw))
-    } catch {
-      setEntries([])
+    let active = true
+    fetch("/api/journal", { cache: "no-store" })
+      .then(async (response) => {
+        const body = (await response.json()) as BackendJournalResponse
+        if (!response.ok) throw new Error("journal unavailable")
+        if (active) {
+          const adapted = body.entries.map(adaptEntry)
+          setEntries(adapted)
+          setIsOffline(false)
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(adapted))
+          setHasLoaded(true)
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        try {
+          const raw = window.localStorage.getItem(STORAGE_KEY)
+          if (raw) setEntries(JSON.parse(raw))
+        } catch {
+          setEntries([])
+        }
+        setIsOffline(true)
+        setHasLoaded(true)
+      })
+    return () => {
+      active = false
     }
   }, [])
 
   useEffect(() => {
+    if (!hasLoaded) return
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
-  }, [entries])
+  }, [entries, hasLoaded])
 
   const pattern = useMemo(() => {
     const fomoCount = entries.filter((entry) => entry.emotion === "追高" || entry.emotion === "恐慌").length
@@ -44,22 +92,51 @@ export function TradeJournal() {
     return fomoCount / entries.length >= 0.4 ? "最近情緒交易偏多，先降低下單頻率。" : "紀錄穩定，繼續保持交易前檢查。"
   }, [entries])
 
-  function addEntry() {
+  async function addEntry() {
     const cleanSymbol = symbol.trim().toUpperCase()
     if (!cleanSymbol) return
-    setEntries((current) => [
-      {
-        id: crypto.randomUUID(),
-        symbol: cleanSymbol,
-        action,
-        emotion,
-        note: note.trim(),
-        createdAt: new Date().toISOString(),
-      },
-      ...current,
-    ].slice(0, 20))
+    const optimisticEntry = {
+      id: crypto.randomUUID(),
+      symbol: cleanSymbol,
+      action,
+      emotion,
+      note: note.trim(),
+      createdAt: new Date().toISOString(),
+    }
+    setEntries((current) => [optimisticEntry, ...current].slice(0, 20))
     setSymbol("")
     setNote("")
+
+    try {
+      const response = await fetch("/api/journal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: cleanSymbol,
+          action,
+          emotion,
+          note: note.trim(),
+        }),
+      })
+      const body = (await response.json()) as BackendJournalEntry
+      if (!response.ok) throw new Error("journal create failed")
+      const saved = adaptEntry(body)
+      setEntries((current) => [saved, ...current.filter((entry) => entry.id !== optimisticEntry.id)].slice(0, 20))
+      setIsOffline(false)
+    } catch {
+      setIsOffline(true)
+    }
+  }
+
+  async function deleteEntry(id: string) {
+    setEntries((current) => current.filter((item) => item.id !== id))
+    if (isOffline) return
+    try {
+      const response = await fetch(`/api/journal/${encodeURIComponent(id)}`, { method: "DELETE" })
+      if (!response.ok) throw new Error("journal delete failed")
+    } catch {
+      setIsOffline(true)
+    }
   }
 
   return (
@@ -69,7 +146,7 @@ export function TradeJournal() {
           <BookOpen className="size-4 text-primary" aria-hidden="true" />
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">交易日記</h2>
         </div>
-        <span className="text-xs text-muted-foreground">{entries.length} 筆</span>
+        <span className="text-xs text-muted-foreground">{isOffline ? "本機暫存" : `${entries.length} 筆`}</span>
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
@@ -127,7 +204,7 @@ export function TradeJournal() {
               </div>
               <button
                 type="button"
-                onClick={() => setEntries((current) => current.filter((item) => item.id !== entry.id))}
+                onClick={() => deleteEntry(entry.id)}
                 className="rounded-md p-1 text-muted-foreground hover:text-short"
                 aria-label="刪除紀錄"
               >
