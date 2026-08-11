@@ -3331,24 +3331,25 @@ async def news_agent_loop() -> None:
 # 6.8 多空情緒擠壓爆破模式（Squeeze Mode，獨立模塊，實驗性策略）
 # ---------------------------------------------------------------------------
 
+def _market_supports_open_interest(market: Optional[dict]) -> bool:
+    if not market:
+        return False
+    if market.get("contract") or market.get("swap") or market.get("future"):
+        return True
+    return str(market.get("type") or "").lower() in {"swap", "future"}
+
+
 def _resolve_perp_symbol(symbol: str, exchange) -> Optional[str]:
     """
     市場掃描的標的本來就是永續合約符號（如 SOL/USDT:USDT），原樣回傳；迷因雷達
     的標的是現貨符號（如 PEPE/USDT），嘗試解析出對應的永續合約符號，該交易所沒
     掛牌的話回傳 None（呼叫端會標示「無合約市場」，不是錯誤）。
     """
-    def supports_open_interest(market: Optional[dict]) -> bool:
-        if not market:
-            return False
-        if market.get("contract") or market.get("swap") or market.get("future"):
-            return True
-        return str(market.get("type") or "").lower() in {"swap", "future"}
-
     if symbol.endswith(":USDT"):
-        return symbol if supports_open_interest(exchange.markets.get(symbol)) else None
+        return symbol if _market_supports_open_interest(exchange.markets.get(symbol)) else None
     base = symbol.split("/")[0]
     candidate = f"{base}/USDT:USDT"
-    return candidate if supports_open_interest(exchange.markets.get(candidate)) else None
+    return candidate if _market_supports_open_interest(exchange.markets.get(candidate)) else None
 
 
 def compute_oi_growth_pct(oi_history: Deque[float], lookback_samples: int) -> Optional[float]:
@@ -3454,17 +3455,21 @@ async def scan_squeeze_mode(exchange_pool: dict) -> None:
 
     async with aiohttp.ClientSession() as agg_session:
         for symbol in candidate_symbols:
+            perp_symbol = _resolve_perp_symbol(symbol, exchange)
             async with state.lock:
                 sq_state = state.get_squeeze_state(symbol)
-                perp_symbol = sq_state.perp_symbol
-                already_resolved = perp_symbol is not None or not sq_state.has_perp_market
-
-            if not already_resolved:
-                perp_symbol = _resolve_perp_symbol(symbol, exchange)
-                async with state.lock:
-                    sq_state = state.get_squeeze_state(symbol)
-                    sq_state.perp_symbol = perp_symbol
-                    sq_state.has_perp_market = perp_symbol is not None
+                if sq_state.perp_symbol != perp_symbol:
+                    sq_state.oi_history.clear()
+                    sq_state.funding_rate = None
+                    sq_state.rvol = None
+                    sq_state.is_breakout = False
+                    sq_state.oi_growth_15m_pct = None
+                    sq_state.oi_growth_1h_pct = None
+                    sq_state.tier = "none"
+                    sq_state.tier_active = False
+                    sq_state.last_updated = datetime.now(timezone.utc).isoformat()
+                sq_state.perp_symbol = perp_symbol
+                sq_state.has_perp_market = perp_symbol is not None
 
             if not perp_symbol:
                 continue  # 沒有合約市場（例如純現貨迷因幣），前端顯示「無合約市場」，這裡直接跳過
