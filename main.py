@@ -93,8 +93,10 @@ from database import (
     delete_watchlist_item,
     init_database,
     insert_ingest_event,
+    insert_trade_history,
     is_database_enabled,
     list_journal_entries,
+    list_trade_history,
     load_watchlist,
     seed_watchlist_if_empty,
     upsert_data_source_health,
@@ -566,8 +568,26 @@ def _record_loop_outcome(loop_name: str, success: bool) -> Optional[str]:
     return None
 
 
+def queue_trade_history_persist(strategy: str, record: dict) -> None:
+    if not is_database_enabled():
+        return
+    asyncio.create_task(asyncio.to_thread(insert_trade_history, strategy, dict(record)))
+
+
+async def load_trade_history_records(strategy: str, memory_records: list[dict], *, symbol: Optional[str] = None) -> list[dict]:
+    if is_database_enabled():
+        records = await asyncio.to_thread(list_trade_history, strategy, symbol=symbol, limit=HISTORY_MAX_LEN)
+        if records is not None:
+            return records
+    return memory_records
+
+
 DATA_SOURCE_HEALTH_STATUS = Literal["starting", "ok", "stale", "error", "disabled"]
 DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS = 30
+TRADE_STRATEGY_MAIN = "main_signal"
+TRADE_STRATEGY_US_ORB = "us_stock_orb"
+TRADE_STRATEGY_RSI2 = "rsi2_meanrev"
+TRADE_STRATEGY_MEME = "meme_trade"
 
 
 class DataSourceHealthState:
@@ -2567,6 +2587,7 @@ async def evaluate_us_stock_open_signal(ticker_symbol: str, current_price: float
         "closed_at": datetime.now(timezone.utc).isoformat(),
     }
     state.us_stock_history.appendleft(closed_record)
+    queue_trade_history_persist(TRADE_STRATEGY_US_ORB, closed_record)
     st.open_signal = None
     append_jsonl(US_STOCK_TRADE_LOG_PATH, closed_record)
     logger.info("美股 ORB 訊號結算：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
@@ -2609,6 +2630,7 @@ async def force_close_us_stock_signal(ticker_symbol: str, current_price: float) 
         "closed_at": datetime.now(timezone.utc).isoformat(),
     }
     state.us_stock_history.appendleft(closed_record)
+    queue_trade_history_persist(TRADE_STRATEGY_US_ORB, closed_record)
     st.open_signal = None
     append_jsonl(US_STOCK_TRADE_LOG_PATH, closed_record)
     logger.info("美股 ORB 收盤強制平倉：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
@@ -2920,6 +2942,7 @@ async def evaluate_meme_trade_signal(ticker_symbol: str, current_price: float) -
         "closed_at": datetime.now(timezone.utc).isoformat(),
     }
     state.meme_trade_history.appendleft(closed_record)
+    queue_trade_history_persist(TRADE_STRATEGY_MEME, closed_record)
     st.open_signal = None
     logger.info("迷因當沖訊號結算：%s %s，結果=%s，損益=%.2f%%", signal["display_name"], side, result, pnl_pct)
 
@@ -3818,6 +3841,7 @@ async def scan_rsi2_stock(display_name: str) -> None:
                     "exit_reason": "SL" if hit_sl else "TP",
                 }
                 state.rsi2_history.appendleft(closed_record)
+                queue_trade_history_persist(TRADE_STRATEGY_RSI2, closed_record)
                 st.open_signal = None
                 emoji = "✅" if result == "WIN" else "❌"
                 settlement_notification = (
@@ -4016,6 +4040,7 @@ async def evaluate_open_signal(symbol: str, current_price: float) -> Optional[st
         "closed_at": datetime.now(timezone.utc).isoformat(),
     }
     state.history.appendleft(closed_record)
+    queue_trade_history_persist(TRADE_STRATEGY_MAIN, closed_record)
     sym_state.open_signal = None
     append_jsonl(TRADE_LOG_PATH, closed_record)
     logger.info("訊號結算：%s %s，結果=%s，損益=%.2f%%", symbol, side, result, pnl_pct)
@@ -5640,24 +5665,26 @@ async def get_signals(universe: Literal["major", "scan"] = "major") -> SignalLis
 async def get_history(symbol: Optional[str] = None) -> HistoryResponse:
     """回傳過去已結算訊號紀錄與勝率統計，可用 ?symbol= 篩選單一標的。"""
     async with state.lock:
-        records = [r for r in state.history if symbol is None or r["symbol"] == symbol]
-        trades = [
-            HistoryItem(
-                symbol=record["symbol"],
-                side=record["side"],
-                entry_price=record["entry_price"],
-                exit_price=record["exit_price"],
-                take_profit=record["take_profit"],
-                stop_loss=record["stop_loss"],
-                leverage=record["leverage"],
-                result=record["result"],
-                pnl_pct=record["pnl_pct"],
-                opened_at=record["opened_at"],
-                closed_at=record["closed_at"],
-                smart_money_notes=record.get("smart_money_notes", []),
-            )
-            for record in records
-        ]
+        memory_records = [r for r in state.history if symbol is None or r["symbol"] == symbol]
+
+    records = await load_trade_history_records(TRADE_STRATEGY_MAIN, memory_records, symbol=symbol)
+    trades = [
+        HistoryItem(
+            symbol=record["symbol"],
+            side=record["side"],
+            entry_price=record["entry_price"],
+            exit_price=record["exit_price"],
+            take_profit=record["take_profit"],
+            stop_loss=record["stop_loss"],
+            leverage=record["leverage"],
+            result=record["result"],
+            pnl_pct=record["pnl_pct"],
+            opened_at=record["opened_at"],
+            closed_at=record["closed_at"],
+            smart_money_notes=record.get("smart_money_notes", []),
+        )
+        for record in records
+    ]
 
     wins = sum(1 for t in trades if t.result == "WIN")
     losses = sum(1 for t in trades if t.result == "LOSS")
@@ -6463,8 +6490,9 @@ async def get_rsi2_meanrev() -> RSI2ListResponse:
 async def get_rsi2_meanrev_history() -> RSI2HistoryResponse:
     """回傳RSI(2)均值回歸已結算的實盤成交紀錄與統計。"""
     async with state.lock:
-        records = list(state.rsi2_history)
+        memory_records = list(state.rsi2_history)
 
+    records = await load_trade_history_records(TRADE_STRATEGY_RSI2, memory_records)
     trades = [RSI2HistoryItem(**r) for r in records]
     wins = sum(1 for t in trades if t.result == "WIN")
     losses = sum(1 for t in trades if t.result == "LOSS")
@@ -6539,8 +6567,9 @@ async def get_us_stock_history() -> USStockHistoryResponse:
     自然累積、可被檢視，取代任何無法驗證的「回測勝率」宣稱。
     """
     async with state.lock:
-        records = list(state.us_stock_history)
+        memory_records = list(state.us_stock_history)
 
+    records = await load_trade_history_records(TRADE_STRATEGY_US_ORB, memory_records)
     trades = [
         USStockHistoryItem(
             symbol=record["symbol"],
@@ -6693,8 +6722,9 @@ async def get_meme_trade_history() -> MemeTradeHistoryResponse:
     小樣本數字當成已證實的勝率。
     """
     async with state.lock:
-        records = list(state.meme_trade_history)
+        memory_records = list(state.meme_trade_history)
 
+    records = await load_trade_history_records(TRADE_STRATEGY_MEME, memory_records)
     trades = [
         MemeTradeHistoryItem(
             symbol=record["symbol"],

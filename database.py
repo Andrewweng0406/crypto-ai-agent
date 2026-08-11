@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Iterable, Optional
 
 logger = logging.getLogger("trading_signal.database")
@@ -403,3 +404,147 @@ def delete_journal_entry(entry_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("刪除 journal_entries 失敗（%s）：%s", entry_id, exc)
         return False
+
+
+def _jsonable(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _parse_datetime(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def insert_trade_history(strategy: str, record: dict) -> None:
+    if not DATABASE_URL:
+        return
+
+    symbol = str(record.get("symbol") or record.get("display_name") or "").strip()
+    if not symbol:
+        return
+
+    opened_at = _parse_datetime(record.get("opened_at"))
+    closed_at = _parse_datetime(record.get("closed_at"))
+    payload = json.dumps(record, ensure_ascii=False, default=str)
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO trade_history (
+                        strategy, symbol, side, result, entry_price, exit_price, take_profit,
+                        stop_loss, leverage, pnl_pct, opened_at, closed_at, payload
+                    )
+                    SELECT
+                        %(strategy)s, %(symbol)s, %(side)s, %(result)s, %(entry_price)s, %(exit_price)s,
+                        %(take_profit)s, %(stop_loss)s, %(leverage)s, %(pnl_pct)s,
+                        %(opened_at)s, %(closed_at)s, %(payload)s::jsonb
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM trade_history
+                        WHERE strategy = %(strategy)s
+                          AND symbol = %(symbol)s
+                          AND opened_at IS NOT DISTINCT FROM %(opened_at)s
+                          AND closed_at IS NOT DISTINCT FROM %(closed_at)s
+                    )
+                    """,
+                    {
+                        "strategy": strategy,
+                        "symbol": symbol,
+                        "side": record.get("side"),
+                        "result": record.get("result"),
+                        "entry_price": record.get("entry_price"),
+                        "exit_price": record.get("exit_price"),
+                        "take_profit": record.get("take_profit"),
+                        "stop_loss": record.get("stop_loss"),
+                        "leverage": record.get("leverage"),
+                        "pnl_pct": record.get("pnl_pct"),
+                        "opened_at": opened_at,
+                        "closed_at": closed_at,
+                        "payload": payload,
+                    },
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 trade_history 失敗（%s:%s）：%s", strategy, symbol, exc)
+
+
+def list_trade_history(strategy: str, *, symbol: Optional[str] = None, limit: int = 50) -> Optional[list[dict]]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                params: list[object] = [strategy]
+                symbol_clause = ""
+                if symbol:
+                    symbol_clause = "AND symbol = %s"
+                    params.append(symbol)
+                params.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT
+                        symbol, side, result, entry_price, exit_price, take_profit,
+                        stop_loss, leverage, pnl_pct, opened_at, closed_at, payload
+                    FROM trade_history
+                    WHERE strategy = %s {symbol_clause}
+                    ORDER BY closed_at DESC NULLS LAST, created_at DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                records: list[dict] = []
+                for row in cur.fetchall():
+                    (
+                        row_symbol,
+                        side,
+                        result,
+                        entry_price,
+                        exit_price,
+                        take_profit,
+                        stop_loss,
+                        leverage,
+                        pnl_pct,
+                        opened_at,
+                        closed_at,
+                        payload,
+                    ) = row
+                    payload_dict = payload if isinstance(payload, dict) else {}
+                    record = dict(payload_dict)
+                    record.update(
+                        {
+                            "symbol": row_symbol,
+                            "side": side,
+                            "result": result,
+                            "entry_price": _jsonable(entry_price),
+                            "exit_price": _jsonable(exit_price),
+                            "take_profit": _jsonable(take_profit),
+                            "stop_loss": _jsonable(stop_loss),
+                            "leverage": leverage,
+                            "pnl_pct": _jsonable(pnl_pct),
+                            "opened_at": _jsonable(opened_at),
+                            "closed_at": _jsonable(closed_at),
+                        }
+                    )
+                    records.append(_jsonable(record))
+                return records
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 trade_history 失敗（%s）：%s", strategy, exc)
+        return None

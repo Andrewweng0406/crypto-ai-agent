@@ -6,8 +6,8 @@ security, observability, and test coverage for `crypto-ai-agent`.
 Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
-- `./venv/bin/python -m pytest -q` passed: 201 tests.
-- Railway production `web` and `frontend` are running commit `86e182d`.
+- `./venv/bin/python -m pytest -q` passed: 203 tests.
+- Railway production `web` and `frontend` are running commit `a4aec33`.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
   reports `database_enabled=true`.
 
@@ -39,6 +39,10 @@ Evidence:
   is enabled, with JSON snapshot retained as fallback.
 - Trade journal now has backend API routes and writes to Postgres in production;
   localStorage is retained only as an offline cache/fallback.
+- Closed trade history now writes to Postgres for main crypto/scan signals,
+  US stock ORB, RSI2 mean reversion, and meme trade. The four history APIs read
+  Postgres first when `DATABASE_URL` is enabled, with memory fallback only if
+  the database read fails.
 - `main.py` still stores trade/news logs in JSONL paths and stores a broad state
   snapshot in `logs/state_snapshot.json`.
 - `main.py` comments explicitly describe the snapshot as "not a real database".
@@ -46,12 +50,13 @@ Evidence:
 Remaining risk:
 - Restart/deploy race can lose or corrupt state.
 - Multiple service replicas would diverge.
-- Trade history, risk settings, and snapshots are not yet read/written through
+- Risk settings and broad process snapshots are not yet read/written through
   Postgres.
 
 Next fix:
-- Migrate trade history and risk settings to use Postgres as the primary source
-  of truth.
+- Migrate risk settings to Postgres as the primary source of truth.
+- Reduce the broad JSON state snapshot to a fallback/debug artifact after the
+  remaining state domains have DB hydration.
 - Keep JSONL only as optional local debug export, not product state.
 
 ### 2. Split background workers from the API process

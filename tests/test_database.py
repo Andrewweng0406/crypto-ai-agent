@@ -15,6 +15,8 @@ def test_database_disabled_without_url(monkeypatch):
     assert database.list_journal_entries() is None
     assert database.create_journal_entry("BTC", "觀察", "冷靜", "") is None
     assert database.delete_journal_entry("00000000-0000-0000-0000-000000000000") is False
+    database.insert_trade_history("main_signal", {"symbol": "BTC/USDT:USDT"})
+    assert database.list_trade_history("main_signal") is None
 
 
 def test_first_migration_declares_core_product_tables():
