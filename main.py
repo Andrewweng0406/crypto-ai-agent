@@ -95,6 +95,7 @@ from database import (
     insert_ingest_event,
     insert_trade_history,
     is_database_enabled,
+    list_data_source_health,
     list_journal_entries,
     list_trade_history,
     load_risk_settings,
@@ -654,6 +655,35 @@ class DataSourceHealthState:
         self.last_error = str(error)[:240]
         if latency_ms is not None:
             self.latency_ms = round(latency_ms, 2)
+
+    def hydrate_from_record(self, record: dict) -> None:
+        if not self.enabled:
+            return
+        status = record.get("status")
+        if status in {"starting", "ok", "stale", "error", "disabled"}:
+            self.status = "ok" if status == "stale" else status
+        self.label = record.get("label") or self.label
+        self.stale_after_seconds = int(record.get("stale_after_seconds") or self.stale_after_seconds)
+        self.last_success_at = record.get("last_success_at")
+        self.last_error_at = record.get("last_error_at")
+        self.last_error = record.get("last_error")
+        latency_ms = record.get("latency_ms")
+        self.latency_ms = round(float(latency_ms), 2) if latency_ms is not None else None
+        self.records_seen = max(0, int(record.get("records_seen") or 0))
+
+        self.last_success_monotonic = None
+        if self.last_success_at:
+            try:
+                parsed = datetime.fromisoformat(str(self.last_success_at).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age_seconds = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds(),
+                )
+                self.last_success_monotonic = time.monotonic() - age_seconds
+            except ValueError:
+                self.last_success_monotonic = None
 
     def as_response_item(self, now_monotonic: float) -> "DataSourceHealthItem":
         is_stale = False
@@ -4380,6 +4410,25 @@ async def flush_data_source_health_to_database_once() -> None:
     await asyncio.to_thread(upsert_data_source_health, rows)
 
 
+async def hydrate_data_source_health_from_database() -> None:
+    if not is_database_enabled():
+        return
+    records = await asyncio.to_thread(list_data_source_health)
+    if not records:
+        return
+    hydrated = 0
+    async with state.lock:
+        for record in records:
+            source = record.get("source")
+            health = state.data_source_health.get(source)
+            if not health:
+                continue
+            health.hydrate_from_record(record)
+            hydrated += 1
+    if hydrated:
+        logger.info("已從 Postgres 恢復 %d 筆資料源健康狀態", hydrated)
+
+
 async def data_source_health_db_flush_loop() -> None:
     if not is_database_enabled():
         return
@@ -5593,6 +5642,7 @@ async def initialize_runtime() -> dict:
     load_state_snapshot()  # 嘗試恢復重啟前的部位/歷史紀錄，須在背景迴圈開始前完成
     await hydrate_watchlists_from_database()
     await hydrate_risk_settings_from_database()
+    await hydrate_data_source_health_from_database()
     await seed_trade_history_from_snapshot()
 
     return exchange_pool

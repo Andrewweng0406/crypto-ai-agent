@@ -7,6 +7,7 @@ def test_database_disabled_without_url(monkeypatch):
     assert database.is_database_enabled() is False
     assert database.init_database() is False
     database.upsert_data_source_health([])
+    assert database.list_data_source_health() is None
     database.insert_ingest_event("source", "event", {})
     assert database.load_watchlist("options") is None
     database.upsert_watchlist_item("options", "NVDA", "NVDA")

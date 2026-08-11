@@ -218,6 +218,53 @@ def upsert_data_source_health(items: Iterable[dict]) -> None:
         logger.warning("寫入 data_source_health 失敗：%s", exc)
 
 
+def list_data_source_health() -> Optional[list[dict]]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        source, label, status, last_success_at, last_error_at,
+                        last_error, latency_ms, stale_after_seconds, records_seen, is_stale
+                    FROM data_source_health
+                    ORDER BY source
+                    """
+                )
+                return [
+                    {
+                        "source": source,
+                        "label": label,
+                        "status": status,
+                        "last_success_at": (
+                            last_success_at.isoformat()
+                            if hasattr(last_success_at, "isoformat")
+                            else last_success_at
+                        ),
+                        "last_error_at": (
+                            last_error_at.isoformat()
+                            if hasattr(last_error_at, "isoformat")
+                            else last_error_at
+                        ),
+                        "last_error": last_error,
+                        "latency_ms": latency_ms,
+                        "stale_after_seconds": stale_after_seconds,
+                        "records_seen": records_seen,
+                        "is_stale": is_stale,
+                    }
+                    for (
+                        source, label, status, last_success_at, last_error_at, last_error,
+                        latency_ms, stale_after_seconds, records_seen, is_stale,
+                    ) in cur.fetchall()
+                ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 data_source_health 失敗：%s", exc)
+        return None
+
+
 def insert_ingest_event(source: str, event_type: str, payload: dict, *, symbol: Optional[str] = None) -> None:
     if not DATABASE_URL:
         return

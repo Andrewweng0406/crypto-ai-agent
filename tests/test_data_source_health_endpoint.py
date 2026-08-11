@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -58,5 +59,37 @@ def test_data_source_health_marks_ok_source_stale_after_threshold():
 
         assert item["status"] == "stale"
         assert item["is_stale"] is True
+    finally:
+        state.data_source_health[source] = original
+
+
+def test_data_source_health_hydrates_stale_database_record():
+    source = "crypto_market"
+    original = deepcopy(state.data_source_health[source])
+    old_success_at = (datetime.now(timezone.utc) - timedelta(
+        seconds=state.data_source_health[source].stale_after_seconds + 30
+    )).isoformat()
+
+    try:
+        state.data_source_health[source].hydrate_from_record({
+            "source": source,
+            "label": "主流幣/市場掃描",
+            "status": "ok",
+            "last_success_at": old_success_at,
+            "last_error_at": None,
+            "last_error": None,
+            "latency_ms": 12.345,
+            "stale_after_seconds": state.data_source_health[source].stale_after_seconds,
+            "records_seen": 9,
+            "is_stale": False,
+        })
+
+        resp = client.get("/api/data-sources/health")
+        item = next(item for item in resp.json()["sources"] if item["source"] == source)
+
+        assert item["status"] == "stale"
+        assert item["is_stale"] is True
+        assert item["records_seen"] == 9
+        assert item["latency_ms"] == 12.35
     finally:
         state.data_source_health[source] = original
