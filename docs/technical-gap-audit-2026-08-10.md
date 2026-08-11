@@ -11,7 +11,7 @@ Current validation:
   Next.js to `16.3.0`.
 - `python -m pip_audit -r requirements.txt --strict` passed: 0 known
   vulnerabilities after upgrading FastAPI to `0.141.1` / Starlette to `1.6.0`.
-- `./venv/bin/python -m pytest -q` passed: 215 tests.
+- `./venv/bin/python -m pytest -q` passed: 216 tests.
 - Railway production `web` and `frontend` should be smoke-tested after each
   pushed commit; the latest local validation includes the checks above.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
@@ -110,15 +110,13 @@ Evidence:
 - Runtime startup now hydrates data-source health from Postgres when
   `DATABASE_URL` is configured, preserving stale calculations from the original
   `last_success_at` timestamp.
+- `/api/data-sources/health` now prefers Postgres rows when available and falls
+  back to in-process defaults for sources not yet present in the table.
 
 Remaining risk:
-- The health response is still served from process memory after hydration, so a
-  web-only process will not live-update until either a worker writes Postgres and
-  the API refreshes, or the endpoint reads directly from Postgres.
 - Worker split still needs a separate worker service plus ownership/locking.
 
 Next fix:
-- Consider direct Postgres reads or periodic refresh for API-only web processes.
 - Add stale-source alerting in Sentry/Telegram after observability is installed.
 
 ## P1 - Required For Production Reliability

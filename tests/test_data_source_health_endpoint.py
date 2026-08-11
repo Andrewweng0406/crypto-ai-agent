@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+import main
 from main import app, state
 
 client = TestClient(app)
@@ -93,3 +94,29 @@ def test_data_source_health_hydrates_stale_database_record():
         assert item["latency_ms"] == 12.35
     finally:
         state.data_source_health[source] = original
+
+
+def test_data_source_health_endpoint_prefers_database_records(monkeypatch):
+    old_success_at = datetime.now(timezone.utc).isoformat()
+
+    monkeypatch.setattr(main, "is_database_enabled", lambda: True)
+    monkeypatch.setattr(main, "list_data_source_health", lambda: [{
+        "source": "crypto_market",
+        "label": "主流幣/市場掃描",
+        "status": "ok",
+        "last_success_at": old_success_at,
+        "last_error_at": None,
+        "last_error": None,
+        "latency_ms": 42.424,
+        "stale_after_seconds": 180,
+        "records_seen": 123,
+        "is_stale": False,
+    }])
+
+    resp = client.get("/api/data-sources/health")
+    body = resp.json()
+    sources = {item["source"]: item for item in body["sources"]}
+
+    assert sources["crypto_market"]["records_seen"] == 123
+    assert sources["crypto_market"]["latency_ms"] == 42.42
+    assert "meme_radar" in sources

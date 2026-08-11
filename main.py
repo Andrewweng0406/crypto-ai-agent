@@ -4429,6 +4429,36 @@ async def hydrate_data_source_health_from_database() -> None:
         logger.info("已從 Postgres 恢復 %d 筆資料源健康狀態", hydrated)
 
 
+async def get_data_source_health_response_items() -> List[DataSourceHealthItem]:
+    records = (
+        await asyncio.to_thread(list_data_source_health)
+        if is_database_enabled()
+        else None
+    )
+    async with state.lock:
+        state_items = state.get_data_source_health()
+        if not records:
+            return state_items
+
+        now_monotonic = time.monotonic()
+        items_by_source = {item.source: item for item in state_items}
+        for record in records:
+            source = record.get("source")
+            template = state.data_source_health.get(source)
+            if not template:
+                continue
+            hydrated = DataSourceHealthState(
+                template.source,
+                template.label,
+                template.stale_after_seconds,
+                status=template.status,
+                enabled=template.enabled,
+            )
+            hydrated.hydrate_from_record(record)
+            items_by_source[source] = hydrated.as_response_item(now_monotonic)
+        return [items_by_source[item.source] for item in state_items]
+
+
 async def data_source_health_db_flush_loop() -> None:
     if not is_database_enabled():
         return
@@ -7482,8 +7512,7 @@ async def data_sources_health() -> DataSourceHealthResponse:
     細粒度資料源健康狀態。這個端點不是只證明 API 活著，而是回報每個背景資料源
     最近一次成功/失敗、延遲、目前是否過期，前端可信度面板必須以這裡為準。
     """
-    async with state.lock:
-        sources = state.get_data_source_health()
+    sources = await get_data_source_health_response_items()
     return DataSourceHealthResponse(sources=sources, updated_at=datetime.now(timezone.utc).isoformat())
 
 
