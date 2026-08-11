@@ -6,7 +6,7 @@ security, observability, and test coverage for `crypto-ai-agent`.
 Current validation:
 - `npm run typecheck` passed.
 - `npm run build` passed.
-- `./venv/bin/python -m pytest -q` passed: 204 tests.
+- `./venv/bin/python -m pytest -q` passed: 209 tests.
 - Railway production `web` and `frontend` are running commit `d77684f`.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
   reports `database_enabled=true`.
@@ -46,6 +46,9 @@ Evidence:
 - Startup seeds existing JSON snapshot trade history into Postgres with
   duplicate protection, so the migration does not hide already accumulated
   real records.
+- Risk settings now have backend API routes and use Postgres as the production
+  source of truth. The frontend risk calculator loads/saves through the backend
+  and treats localStorage only as offline cache.
 - `main.py` still stores trade/news logs in JSONL paths and stores a broad state
   snapshot in `logs/state_snapshot.json`.
 - `main.py` comments explicitly describe the snapshot as "not a real database".
@@ -53,11 +56,10 @@ Evidence:
 Remaining risk:
 - Restart/deploy race can lose or corrupt state.
 - Multiple service replicas would diverge.
-- Risk settings and broad process snapshots are not yet read/written through
-  Postgres.
+- Broad process snapshots are not yet fully decomposed into Postgres-owned
+  state domains.
 
 Next fix:
-- Migrate risk settings to Postgres as the primary source of truth.
 - Reduce the broad JSON state snapshot to a fallback/debug artifact after the
   remaining state domains have DB hydration.
 - Keep JSONL only as optional local debug export, not product state.

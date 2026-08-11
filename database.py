@@ -406,6 +406,82 @@ def delete_journal_entry(entry_id: str) -> bool:
         return False
 
 
+def load_risk_settings() -> Optional[dict]:
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT account_size, risk_pct, max_leverage, payload, updated_at
+                    FROM risk_settings
+                    WHERE owner_key = 'global'
+                    """,
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                account_size, risk_pct, max_leverage, payload, updated_at = row
+                payload_dict = payload if isinstance(payload, dict) else {}
+                return _jsonable(
+                    {
+                        **payload_dict,
+                        "account_size": account_size,
+                        "risk_pct": risk_pct,
+                        "max_leverage": max_leverage,
+                        "updated_at": updated_at,
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 risk_settings 失敗：%s", exc)
+        return None
+
+
+def upsert_risk_settings(account_size: float, risk_pct: float, max_leverage: int) -> Optional[dict]:
+    if not DATABASE_URL:
+        return None
+
+    payload = {
+        "account_size": account_size,
+        "risk_pct": risk_pct,
+        "max_leverage": max_leverage,
+    }
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO risk_settings (
+                        owner_key, account_size, risk_pct, max_leverage, payload, updated_at
+                    )
+                    VALUES ('global', %s, %s, %s, %s::jsonb, now())
+                    ON CONFLICT (owner_key) DO UPDATE SET
+                        account_size = EXCLUDED.account_size,
+                        risk_pct = EXCLUDED.risk_pct,
+                        max_leverage = EXCLUDED.max_leverage,
+                        payload = EXCLUDED.payload,
+                        updated_at = now()
+                    RETURNING account_size, risk_pct, max_leverage, updated_at
+                    """,
+                    (account_size, risk_pct, max_leverage, json.dumps(payload, ensure_ascii=False)),
+                )
+                saved_account_size, saved_risk_pct, saved_max_leverage, updated_at = cur.fetchone()
+                return _jsonable(
+                    {
+                        "account_size": saved_account_size,
+                        "risk_pct": saved_risk_pct,
+                        "max_leverage": saved_max_leverage,
+                        "updated_at": updated_at,
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 risk_settings 失敗：%s", exc)
+        return None
+
+
 def _jsonable(value):
     if isinstance(value, Decimal):
         return float(value)

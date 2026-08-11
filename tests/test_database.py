@@ -17,6 +17,8 @@ def test_database_disabled_without_url(monkeypatch):
     assert database.delete_journal_entry("00000000-0000-0000-0000-000000000000") is False
     database.insert_trade_history("main_signal", {"symbol": "BTC/USDT:USDT"})
     assert database.list_trade_history("main_signal") is None
+    assert database.load_risk_settings() is None
+    assert database.upsert_risk_settings(1000, 1, 5) is None
 
 
 def test_first_migration_declares_core_product_tables():

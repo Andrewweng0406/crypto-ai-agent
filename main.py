@@ -97,9 +97,11 @@ from database import (
     is_database_enabled,
     list_journal_entries,
     list_trade_history,
+    load_risk_settings,
     load_watchlist,
     seed_watchlist_if_empty,
     upsert_data_source_health,
+    upsert_risk_settings,
     upsert_watchlist_item,
 )
 import gex_engine
@@ -588,6 +590,11 @@ TRADE_STRATEGY_MAIN = "main_signal"
 TRADE_STRATEGY_US_ORB = "us_stock_orb"
 TRADE_STRATEGY_RSI2 = "rsi2_meanrev"
 TRADE_STRATEGY_MEME = "meme_trade"
+DEFAULT_RISK_SETTINGS = {
+    "account_size": 1000.0,
+    "risk_pct": 1.0,
+    "max_leverage": 5,
+}
 
 
 class DataSourceHealthState:
@@ -713,6 +720,19 @@ class DataSourceHealthItem(BaseModel):
 class DataSourceHealthResponse(BaseModel):
     sources: List[DataSourceHealthItem]
     updated_at: str
+
+
+class RiskSettingsResponse(BaseModel):
+    account_size: float
+    risk_pct: float
+    max_leverage: int
+    updated_at: Optional[str] = None
+
+
+class RiskSettingsUpdateRequest(BaseModel):
+    account_size: float
+    risk_pct: float
+    max_leverage: int
 
 
 class SignalListResponse(BaseModel):
@@ -1446,6 +1466,7 @@ class AppState:
         self.rsi2_states: Dict[str, RSI2StockState] = {}
         self.rsi2_history: Deque[dict] = deque(maxlen=RSI2_HISTORY_MAX_LEN)
         self.journal_entries: Deque[dict] = deque(maxlen=50)
+        self.risk_settings: dict = dict(DEFAULT_RISK_SETTINGS)
 
     def mark_data_source_success(
         self,
@@ -4370,6 +4391,34 @@ async def hydrate_watchlists_from_database() -> None:
         await asyncio.to_thread(seed_watchlist_if_empty, "us_stock", us_stock_seed)
 
 
+async def hydrate_risk_settings_from_database() -> None:
+    if not is_database_enabled():
+        return
+
+    settings = await asyncio.to_thread(load_risk_settings)
+    if settings:
+        async with state.lock:
+            state.risk_settings = {
+                "account_size": float(settings["account_size"]),
+                "risk_pct": float(settings["risk_pct"]),
+                "max_leverage": int(settings["max_leverage"]),
+                "updated_at": settings.get("updated_at"),
+            }
+        return
+
+    async with state.lock:
+        seed = dict(state.risk_settings)
+    saved = await asyncio.to_thread(
+        upsert_risk_settings,
+        float(seed["account_size"]),
+        float(seed["risk_pct"]),
+        int(seed["max_leverage"]),
+    )
+    if saved:
+        async with state.lock:
+            state.risk_settings = saved
+
+
 async def seed_trade_history_from_snapshot() -> None:
     if not is_database_enabled():
         return
@@ -4490,6 +4539,7 @@ def save_state_snapshot() -> None:
             "research_bundles": state.research_bundles,
             "options_watchlist": state.options_watchlist,
             "us_stock_watchlist": state.us_stock_watchlist,
+            "risk_settings": state.risk_settings,
             "rsi2_states": {
                 symbol: {"open_signal": s.open_signal, "triggered_date": s.triggered_date}
                 for symbol, s in state.rsi2_states.items()
@@ -4669,6 +4719,11 @@ def load_state_snapshot() -> None:
             # display_name本身，不需要使用者手動重加一次自選清單。
             state.us_stock_watchlist = {
                 k: (k if "/" in v else v) for k, v in snapshot["us_stock_watchlist"].items()
+            }
+        if snapshot.get("risk_settings"):
+            state.risk_settings = {
+                **dict(DEFAULT_RISK_SETTINGS),
+                **snapshot["risk_settings"],
             }
 
         for symbol, data in snapshot.get("rsi2_states", {}).items():
@@ -5511,6 +5566,7 @@ async def lifespan(app: FastAPI):
 
     load_state_snapshot()  # 嘗試恢復重啟前的部位/歷史紀錄，須在背景迴圈開始前完成
     await hydrate_watchlists_from_database()
+    await hydrate_risk_settings_from_database()
     await seed_trade_history_from_snapshot()
 
     monitor_task = asyncio.create_task(price_monitor_loop(exchange_pool))
@@ -6000,6 +6056,54 @@ async def remove_options_watchlist(display_name: str, request: Request) -> Watch
     await asyncio.to_thread(delete_watchlist_item, "options", normalized_display_name)
     save_state_snapshot()
     return WatchlistResponse(items=items)
+
+
+def _validate_risk_settings(account_size: float, risk_pct: float, max_leverage: int) -> None:
+    if not math.isfinite(account_size) or account_size <= 0 or account_size > 100_000_000:
+        raise HTTPException(status_code=400, detail="帳戶資金必須介於 0 和 100,000,000 之間")
+    if not math.isfinite(risk_pct) or risk_pct < 0.1 or risk_pct > 10:
+        raise HTTPException(status_code=400, detail="單筆風險必須介於 0.1% 和 10% 之間")
+    if max_leverage < 1 or max_leverage > 125:
+        raise HTTPException(status_code=400, detail="最大槓桿必須介於 1x 和 125x 之間")
+
+
+@app.get("/api/risk-settings", response_model=RiskSettingsResponse)
+async def get_risk_settings() -> RiskSettingsResponse:
+    if is_database_enabled():
+        row = await asyncio.to_thread(load_risk_settings)
+        if row:
+            async with state.lock:
+                state.risk_settings = row
+            return RiskSettingsResponse(**row)
+
+    async with state.lock:
+        settings = dict(state.risk_settings)
+    return RiskSettingsResponse(**settings)
+
+
+@app.put("/api/risk-settings", response_model=RiskSettingsResponse)
+async def update_risk_settings(body: RiskSettingsUpdateRequest) -> RiskSettingsResponse:
+    account_size = round(float(body.account_size), 2)
+    risk_pct = round(float(body.risk_pct), 2)
+    max_leverage = int(body.max_leverage)
+    _validate_risk_settings(account_size, risk_pct, max_leverage)
+
+    if is_database_enabled():
+        row = await asyncio.to_thread(upsert_risk_settings, account_size, risk_pct, max_leverage)
+        if row is None:
+            raise HTTPException(status_code=503, detail="風控設定資料庫暫時不可用")
+    else:
+        row = {
+            "account_size": account_size,
+            "risk_pct": risk_pct,
+            "max_leverage": max_leverage,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async with state.lock:
+        state.risk_settings = row
+    save_state_snapshot()
+    return RiskSettingsResponse(**row)
 
 
 @app.get("/api/journal", response_model=JournalListResponse)

@@ -170,13 +170,19 @@ export function estimatePositionRisk(input: {
   riskPct: number
   entry: number
   stop: number
+  maxLeverage?: number
 }) {
   const accountRisk = input.accountSize * (input.riskPct / 100)
   const stopMovePct = input.entry > 0 ? Math.abs(input.entry - input.stop) / input.entry : 0
-  const positionValue = stopMovePct > 0 ? accountRisk / stopMovePct : 0
+  const rawPositionValue = stopMovePct > 0 ? accountRisk / stopMovePct : 0
+  const leverageCap = input.accountSize * Math.max(input.maxLeverage ?? Number.POSITIVE_INFINITY, 1)
+  const positionValue = Math.min(rawPositionValue, leverageCap)
   return {
     accountRisk,
     stopMovePct: stopMovePct * 100,
+    rawPositionValue,
     positionValue,
+    requiredLeverage: input.accountSize > 0 ? rawPositionValue / input.accountSize : 0,
+    cappedByLeverage: rawPositionValue > leverageCap,
   }
 }
