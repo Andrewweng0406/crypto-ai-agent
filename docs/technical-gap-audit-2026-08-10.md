@@ -11,7 +11,7 @@ Current validation:
   Next.js to `16.3.0`.
 - `python -m pip_audit -r requirements.txt --strict` passed: 0 known
   vulnerabilities after upgrading FastAPI to `0.141.1` / Starlette to `1.6.0`.
-- `./venv/bin/python -m pytest -q` passed: 216 tests.
+- `./venv/bin/python -m pytest -q` passed: 217 tests.
 - Railway production `web` and `frontend` should be smoke-tested after each
   pushed commit; the latest local validation includes the checks above.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
@@ -82,21 +82,25 @@ Evidence:
 - `BACKGROUND_WORKERS_ENABLED=false` lets the API process start without scanner
   loops, while `worker.py` can run the scanner loops as a standalone process.
 - `Procfile` now defines both `web` and `worker` process types.
+- Migration `2` adds `job_leases`, and each scanner loop now acquires a
+  Postgres-backed lease before running a cycle. This prevents duplicate scan
+  cycles when multiple worker/API processes are alive.
 
 Risk:
 - Production Railway still runs the existing single-service behavior by default,
   so one heavy worker can still degrade API latency until a separate worker
   service is created and `BACKGROUND_WORKERS_ENABLED=false` is set on web.
 - Deploying API still restarts scanners until the worker service is split out.
-- Scaling API replicas would still duplicate scanners unless the web service is
-  configured with `BACKGROUND_WORKERS_ENABLED=false`.
+- Lease ownership now protects scan cycles from duplicate execution, but scaling
+  API replicas still wastes resources unless the web service is configured with
+  `BACKGROUND_WORKERS_ENABLED=false`.
 - Failures are logged but not centrally observable.
 
 Fix:
 - Configure Railway `web` with `BACKGROUND_WORKERS_ENABLED=false`.
 - Add at least one Railway worker service running `python worker.py`; later split
   into domain-specific workers if resource contention remains high.
-- Use DB row locks/advisory locks or a queue so only one worker owns each job.
+- Add lock observability/alerts so expired or contested leases are visible.
 
 ### 3. Backend-owned data-source health API - first phase completed
 

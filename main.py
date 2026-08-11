@@ -101,6 +101,7 @@ from database import (
     load_risk_settings,
     load_watchlist,
     seed_watchlist_if_empty,
+    try_acquire_job_lease,
     upsert_data_source_health,
     upsert_risk_settings,
     upsert_watchlist_item,
@@ -128,6 +129,15 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 BACKGROUND_WORKERS_ENABLED = _env_flag("BACKGROUND_WORKERS_ENABLED", True)
+WORKER_INSTANCE_ID = ":".join(
+    part
+    for part in (
+        os.getenv("RAILWAY_DEPLOYMENT_ID"),
+        os.getenv("HOSTNAME"),
+        str(uuid.uuid4()),
+    )
+    if part
+)
 
 MAJOR_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]  # 固定監控的核心資產
 
@@ -590,6 +600,15 @@ def queue_trade_history_persist(strategy: str, record: dict) -> None:
     if not is_database_enabled():
         return
     asyncio.create_task(asyncio.to_thread(insert_trade_history, strategy, dict(record)))
+
+
+async def acquire_background_job_lease(job_name: str, ttl_seconds: int) -> bool:
+    return await asyncio.to_thread(
+        try_acquire_job_lease,
+        job_name,
+        WORKER_INSTANCE_ID,
+        ttl_seconds,
+    )
 
 
 async def load_trade_history_records(strategy: str, memory_records: list[dict], *, symbol: Optional[str] = None) -> list[dict]:
@@ -2764,6 +2783,10 @@ async def us_stock_orb_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("us_stock_orb_loop", US_STOCK_TICKER_INTERVAL_SECONDS * 4):
+                await asyncio.sleep(US_STOCK_TICKER_INTERVAL_SECONDS)
+                continue
+
             now_et = datetime.now(tz)
             is_active = _is_us_market_active(now_et)
 
@@ -3034,6 +3057,10 @@ async def meme_trade_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("meme_trade_loop", MEME_TRADE_TICKER_INTERVAL_SECONDS * 6):
+                await asyncio.sleep(MEME_TRADE_TICKER_INTERVAL_SECONDS)
+                continue
+
             try:
                 prices = await fetch_tickers_batch(exchange_pool, MEME_TRADE_SYMBOLS)
             except Exception as exc:  # noqa: BLE001
@@ -3352,6 +3379,10 @@ async def news_agent_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("news_agent_loop", NEWS_SCAN_INTERVAL_SECONDS * 2):
+                await asyncio.sleep(NEWS_SCAN_INTERVAL_SECONDS)
+                continue
+
             await scan_news_agent(openai_client)
             async with state.lock:
                 state.mark_data_source_success(
@@ -3629,6 +3660,10 @@ async def squeeze_mode_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("squeeze_mode_loop", SQUEEZE_OI_POLL_INTERVAL_SECONDS * 2):
+                await asyncio.sleep(SQUEEZE_OI_POLL_INTERVAL_SECONDS)
+                continue
+
             await scan_squeeze_mode(exchange_pool)
             async with state.lock:
                 state.mark_data_source_success(
@@ -3818,6 +3853,10 @@ async def options_analytics_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("options_analytics_loop", OPTIONS_SCAN_INTERVAL_SECONDS * 4):
+                await asyncio.sleep(OPTIONS_SCAN_INTERVAL_SECONDS)
+                continue
+
             await scan_options_analytics()
             async with state.lock:
                 state.mark_data_source_success(
@@ -3984,6 +4023,10 @@ async def rsi2_meanrev_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("rsi2_meanrev_loop", US_STOCK_CLOSED_POLL_SECONDS * 2):
+                await asyncio.sleep(US_STOCK_CLOSED_POLL_SECONDS)
+                continue
+
             now_et = datetime.now(tz)
             if not _is_us_market_active(now_et):
                 await asyncio.sleep(US_STOCK_CLOSED_POLL_SECONDS)
@@ -4381,6 +4424,10 @@ async def price_monitor_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
+            if not await acquire_background_job_lease("price_monitor_loop", max(TICK_INTERVAL_SECONDS * 6, 120)):
+                await asyncio.sleep(TICK_INTERVAL_SECONDS)
+                continue
+
             await run_tick(exchange_pool)
             async with state.lock:
                 elapsed_ms = (time.monotonic() - started_at) * 1000

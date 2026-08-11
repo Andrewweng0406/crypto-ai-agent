@@ -123,7 +123,23 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_ingest_events_source_received
             ON ingest_events (source, received_at DESC);
         """,
-    )
+    ),
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS job_leases (
+            job_name TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            acquired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_job_leases_expires
+            ON job_leases (expires_at);
+        """,
+    ),
 ]
 
 
@@ -263,6 +279,38 @@ def list_data_source_health() -> Optional[list[dict]]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("讀取 data_source_health 失敗：%s", exc)
         return None
+
+
+def try_acquire_job_lease(job_name: str, owner_id: str, ttl_seconds: int) -> bool:
+    if not DATABASE_URL:
+        return True
+
+    ttl_seconds = max(1, int(ttl_seconds))
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO job_leases (
+                        job_name, owner_id, acquired_at, heartbeat_at, expires_at
+                    )
+                    VALUES (%s, %s, now(), now(), now() + (%s * interval '1 second'))
+                    ON CONFLICT (job_name) DO UPDATE SET
+                        owner_id = EXCLUDED.owner_id,
+                        acquired_at = now(),
+                        heartbeat_at = now(),
+                        expires_at = EXCLUDED.expires_at
+                    WHERE
+                        job_leases.expires_at <= now()
+                        OR job_leases.owner_id = EXCLUDED.owner_id
+                    RETURNING job_name
+                    """,
+                    (job_name, owner_id, ttl_seconds),
+                )
+                return cur.fetchone() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取得 job lease 失敗（%s），為避免停擺暫時允許執行：%s", job_name, exc)
+        return True
 
 
 def insert_ingest_event(source: str, event_type: str, payload: dict, *, symbol: Optional[str] = None) -> None:
