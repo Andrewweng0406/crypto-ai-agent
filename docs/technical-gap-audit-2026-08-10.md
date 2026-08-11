@@ -11,7 +11,7 @@ Current validation:
   Next.js to `16.3.0`.
 - `python -m pip_audit -r requirements.txt --strict` passed: 0 known
   vulnerabilities after upgrading FastAPI to `0.141.1` / Starlette to `1.6.0`.
-- `./venv/bin/python -m pytest -q` passed: 211 tests.
+- `./venv/bin/python -m pytest -q` passed: 214 tests.
 - Railway production `web` and `frontend` should be smoke-tested after each
   pushed commit; the latest local validation includes the checks above.
 - Railway Postgres is provisioned and connected to `web`; `/api/health`
@@ -70,23 +70,32 @@ Next fix:
   remaining state domains have DB hydration.
 - Keep JSONL only as optional local debug export, not product state.
 
-### 2. Split background workers from the API process
+### 2. Split background workers from the API process - first phase started
 
 Evidence:
 - FastAPI `lifespan()` starts seven long-running loops with
   `asyncio.create_task`: crypto monitor, US stock ORB, news agent, squeeze,
   options analytics, RSI2, and meme trade.
+- Runtime bootstrapping is now factored into reusable helpers:
+  `initialize_runtime()`, `start_background_tasks()`, `shutdown_runtime()`, and
+  `run_background_workers()`.
+- `BACKGROUND_WORKERS_ENABLED=false` lets the API process start without scanner
+  loops, while `worker.py` can run the scanner loops as a standalone process.
+- `Procfile` now defines both `web` and `worker` process types.
 
 Risk:
-- One heavy worker can degrade API latency.
-- Deploying API restarts all scanners.
-- Scaling API replicas would duplicate scanners unless explicitly guarded.
+- Production Railway still runs the existing single-service behavior by default,
+  so one heavy worker can still degrade API latency until a separate worker
+  service is created and `BACKGROUND_WORKERS_ENABLED=false` is set on web.
+- Deploying API still restarts scanners until the worker service is split out.
+- Scaling API replicas would still duplicate scanners unless the web service is
+  configured with `BACKGROUND_WORKERS_ENABLED=false`.
 - Failures are logged but not centrally observable.
 
 Fix:
-- Keep `web` as API-only.
-- Add worker services: `crypto-worker`, `stocks-worker`, `options-worker`,
-  `news-worker`, `ingest-worker`.
+- Configure Railway `web` with `BACKGROUND_WORKERS_ENABLED=false`.
+- Add at least one Railway worker service running `python worker.py`; later split
+  into domain-specific workers if resource contention remains high.
 - Use DB row locks/advisory locks or a queue so only one worker owns each job.
 
 ### 3. Backend-owned data-source health API - first phase completed

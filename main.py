@@ -113,6 +113,21 @@ import yfinance_client
 # 1. 全域設定（可依需求調整）
 # ---------------------------------------------------------------------------
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    logging.getLogger("trading_signal").warning("環境變數 %s=%r 不是有效布林值，沿用預設 %s", name, raw, default)
+    return default
+
+
+BACKGROUND_WORKERS_ENABLED = _env_flag("BACKGROUND_WORKERS_ENABLED", True)
+
 MAJOR_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]  # 固定監控的核心資產
 
 SCAN_UNIVERSE_SIZE = 40                 # 市場掃描名單抓幾檔（依24h成交量排序取前N）
@@ -5558,8 +5573,7 @@ class JournalCreateRequest(BaseModel):
 # 9. FastAPI 應用程式（lifespan 管理背景任務與交易所連線）
 # ---------------------------------------------------------------------------
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def initialize_runtime() -> dict:
     database_ready = await asyncio.to_thread(init_database)
     if database_ready:
         logger.info("Postgres 持久化已啟用")
@@ -5581,7 +5595,14 @@ async def lifespan(app: FastAPI):
     await hydrate_risk_settings_from_database()
     await seed_trade_history_from_snapshot()
 
+    return exchange_pool
+
+
+def start_background_tasks(exchange_pool: dict) -> List[asyncio.Task]:
+    tasks: List[asyncio.Task] = []
+
     monitor_task = asyncio.create_task(price_monitor_loop(exchange_pool))
+    tasks.append(monitor_task)
     logger.info(
         "背景多標的監控已啟動（主流幣：%s，掃描名單前 %d 檔，每 %s 秒更新一次）",
         ", ".join(MAJOR_SYMBOLS),
@@ -5590,6 +5611,7 @@ async def lifespan(app: FastAPI):
     )
 
     us_stock_task = asyncio.create_task(us_stock_orb_loop())
+    tasks.append(us_stock_task)
     logger.info(
         "美股 ORB 當沖背景迴圈已啟動（標的：%s，只在美東 %s-%s 交易時段內運作）",
         ", ".join(state.us_stock_watchlist.keys()),
@@ -5598,6 +5620,7 @@ async def lifespan(app: FastAPI):
     )
 
     news_agent_task = asyncio.create_task(news_agent_loop())
+    tasks.append(news_agent_task)
     logger.info(
         "AI 智能投研 Agent 背景迴圈已啟動（新聞來源：%s，每 %d 秒一輪）",
         ", ".join(NEWS_RSS_FEEDS.keys()),
@@ -5605,9 +5628,11 @@ async def lifespan(app: FastAPI):
     )
 
     squeeze_mode_task = asyncio.create_task(squeeze_mode_loop(exchange_pool))
+    tasks.append(squeeze_mode_task)
     logger.info("Squeeze模式背景迴圈已啟動（每 %d 秒輪詢OI+資金費率+現貨RVOL）", SQUEEZE_OI_POLL_INTERVAL_SECONDS)
 
     options_task = asyncio.create_task(options_analytics_loop())
+    tasks.append(options_task)
     if OPTIONS_ANALYTICS_ENABLED:
         logger.info(
             "期權分析背景迴圈已啟動（標的：%s，每 %d 秒重算一次GEX剖面）",
@@ -5616,45 +5641,66 @@ async def lifespan(app: FastAPI):
         )
 
     rsi2_meanrev_task = asyncio.create_task(rsi2_meanrev_loop())
+    tasks.append(rsi2_meanrev_task)
     logger.info(
         "🎯 RSI(2)均值回歸實盤監控已啟動（標的：%s，只在美股交易時段內運作）",
         ", ".join(STOCK_MEANREV_SYMBOLS),
     )
 
     meme_trade_task = asyncio.create_task(meme_trade_loop(exchange_pool))
+    tasks.append(meme_trade_task)
     logger.info(
         "🔥 迷因當沖背景迴圈已啟動（標的：%s，180天回測樣本數達統計門檻的兩檔）",
         ", ".join(s.split("/")[0] for s in MEME_TRADE_SYMBOLS),
     )
+
     data_source_health_flush_task = asyncio.create_task(data_source_health_db_flush_loop())
+    tasks.append(data_source_health_flush_task)
     if is_database_enabled():
         logger.info("資料源健康狀態 Postgres 同步迴圈已啟動（每 %d 秒）", DATA_SOURCE_HEALTH_DB_FLUSH_SECONDS)
+
+    return tasks
+
+
+async def shutdown_runtime(exchange_pool: dict, tasks: Optional[List[asyncio.Task]] = None) -> None:
+    for task in tasks or []:
+        task.cancel()
+    for task in tasks or []:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    save_state_snapshot()  # 正常關機前再存一次，盡量減少關機瞬間的資料落差
+    await flush_data_source_health_to_database_once()
+    exchange_pool_ref.clear()
+    for exchange in exchange_pool.values():
+        await exchange.close()
+    logger.info("背景監控已關閉，交易所連線已釋放")
+
+
+async def run_background_workers() -> None:
+    exchange_pool = await initialize_runtime()
+    tasks = start_background_tasks(exchange_pool)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await shutdown_runtime(exchange_pool, tasks)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    exchange_pool = await initialize_runtime()
+    tasks: List[asyncio.Task] = []
+    if BACKGROUND_WORKERS_ENABLED:
+        tasks = start_background_tasks(exchange_pool)
+    else:
+        logger.info("BACKGROUND_WORKERS_ENABLED=false，API process 不啟動背景監控迴圈")
 
     try:
         yield
     finally:
-        monitor_task.cancel()
-        us_stock_task.cancel()
-        news_agent_task.cancel()
-        squeeze_mode_task.cancel()
-        options_task.cancel()
-        meme_trade_task.cancel()
-        rsi2_meanrev_task.cancel()
-        data_source_health_flush_task.cancel()
-        for task in (
-            monitor_task, us_stock_task, news_agent_task, squeeze_mode_task, options_task, meme_trade_task,
-            rsi2_meanrev_task, data_source_health_flush_task,
-        ):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        save_state_snapshot()  # 正常關機前再存一次，盡量減少關機瞬間的資料落差
-        await flush_data_source_health_to_database_once()
-        exchange_pool_ref.clear()
-        for exchange in exchange_pool.values():
-            await exchange.close()
-        logger.info("背景監控已關閉，交易所連線已釋放")
+        await shutdown_runtime(exchange_pool, tasks)
 
 
 app = FastAPI(title="AI 交易訊號 API", lifespan=lifespan)
