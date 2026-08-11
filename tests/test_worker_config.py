@@ -19,3 +19,8 @@ def test_env_flag_uses_default_for_missing_or_invalid_values(monkeypatch):
 
     monkeypatch.setenv("BACKGROUND_WORKERS_ENABLED", "maybe")
     assert main._env_flag("BACKGROUND_WORKERS_ENABLED", False) is False
+
+
+def test_background_job_lease_ttl_has_minimum():
+    assert main.background_job_lease_ttl(5, 6) == 120
+    assert main.background_job_lease_ttl(300, 2) == 600

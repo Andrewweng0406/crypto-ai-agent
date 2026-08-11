@@ -622,6 +622,10 @@ async def acquire_background_job_lease(job_name: str, ttl_seconds: int) -> bool:
     )
 
 
+def background_job_lease_ttl(interval_seconds: int, multiplier: int, *, minimum_seconds: int = 120) -> int:
+    return max(int(interval_seconds) * multiplier, minimum_seconds)
+
+
 async def load_trade_history_records(strategy: str, memory_records: list[dict], *, symbol: Optional[str] = None) -> list[dict]:
     if is_database_enabled():
         records = await asyncio.to_thread(list_trade_history, strategy, symbol=symbol, limit=HISTORY_MAX_LEN)
@@ -2810,7 +2814,10 @@ async def us_stock_orb_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("us_stock_orb_loop", US_STOCK_TICKER_INTERVAL_SECONDS * 4):
+            if not await acquire_background_job_lease(
+                "us_stock_orb_loop",
+                background_job_lease_ttl(US_STOCK_TICKER_INTERVAL_SECONDS, 4),
+            ):
                 await asyncio.sleep(US_STOCK_TICKER_INTERVAL_SECONDS)
                 continue
 
@@ -3084,7 +3091,10 @@ async def meme_trade_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("meme_trade_loop", MEME_TRADE_TICKER_INTERVAL_SECONDS * 6):
+            if not await acquire_background_job_lease(
+                "meme_trade_loop",
+                background_job_lease_ttl(MEME_TRADE_TICKER_INTERVAL_SECONDS, 6),
+            ):
                 await asyncio.sleep(MEME_TRADE_TICKER_INTERVAL_SECONDS)
                 continue
 
@@ -3406,7 +3416,10 @@ async def news_agent_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("news_agent_loop", NEWS_SCAN_INTERVAL_SECONDS * 2):
+            if not await acquire_background_job_lease(
+                "news_agent_loop",
+                background_job_lease_ttl(NEWS_SCAN_INTERVAL_SECONDS, 2),
+            ):
                 await asyncio.sleep(NEWS_SCAN_INTERVAL_SECONDS)
                 continue
 
@@ -3687,7 +3700,10 @@ async def squeeze_mode_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("squeeze_mode_loop", SQUEEZE_OI_POLL_INTERVAL_SECONDS * 2):
+            if not await acquire_background_job_lease(
+                "squeeze_mode_loop",
+                background_job_lease_ttl(SQUEEZE_OI_POLL_INTERVAL_SECONDS, 2),
+            ):
                 await asyncio.sleep(SQUEEZE_OI_POLL_INTERVAL_SECONDS)
                 continue
 
@@ -3880,7 +3896,10 @@ async def options_analytics_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("options_analytics_loop", OPTIONS_SCAN_INTERVAL_SECONDS * 4):
+            if not await acquire_background_job_lease(
+                "options_analytics_loop",
+                background_job_lease_ttl(OPTIONS_SCAN_INTERVAL_SECONDS, 4),
+            ):
                 await asyncio.sleep(OPTIONS_SCAN_INTERVAL_SECONDS)
                 continue
 
@@ -4050,7 +4069,10 @@ async def rsi2_meanrev_loop() -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("rsi2_meanrev_loop", US_STOCK_CLOSED_POLL_SECONDS * 2):
+            if not await acquire_background_job_lease(
+                "rsi2_meanrev_loop",
+                background_job_lease_ttl(US_STOCK_CLOSED_POLL_SECONDS, 2),
+            ):
                 await asyncio.sleep(US_STOCK_CLOSED_POLL_SECONDS)
                 continue
 
@@ -4451,7 +4473,10 @@ async def price_monitor_loop(exchange_pool: dict) -> None:
         failure_notification: Optional[str] = None
         started_at = time.monotonic()
         try:
-            if not await acquire_background_job_lease("price_monitor_loop", max(TICK_INTERVAL_SECONDS * 6, 120)):
+            if not await acquire_background_job_lease(
+                "price_monitor_loop",
+                background_job_lease_ttl(TICK_INTERVAL_SECONDS, 6),
+            ):
                 await asyncio.sleep(TICK_INTERVAL_SECONDS)
                 continue
 
