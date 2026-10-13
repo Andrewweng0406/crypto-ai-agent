@@ -88,6 +88,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from btc_quant.paper import PaperAccount
+from btc_quant.runner import run_btc_quant_loop
+from btc_quant.store import make_store as make_btc_quant_store
 from database import (
     create_journal_entry,
     delete_journal_entry,
@@ -148,6 +151,7 @@ BACKGROUND_JOB_LABELS = {
     "squeeze_mode_loop": "Squeeze/OI",
     "options_analytics_loop": "期權/GEX",
     "rsi2_meanrev_loop": "RSI2 均值回歸",
+    "btc_quant_loop": "BTC 量化（紙上）",
 }
 
 MAJOR_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]  # 固定監控的核心資產
@@ -5877,6 +5881,14 @@ def start_background_tasks(exchange_pool: dict) -> List[asyncio.Task]:
     else:
         logger.info("迷因當沖已停用（MEME_TRADE_ENABLED=false）")
 
+    if _env_flag("BTC_QUANT_ENABLED", False):
+        tasks.append(
+            asyncio.create_task(
+                run_btc_quant_loop(send_telegram_message, acquire_background_job_lease, _record_loop_outcome)
+            )
+        )
+        logger.info("BTC 量化紙上交易迴圈已啟動（每 300 秒一次）")
+
     data_source_health_flush_task = asyncio.create_task(data_source_health_db_flush_loop())
     tasks.append(data_source_health_flush_task)
     if is_database_enabled():
@@ -6021,6 +6033,31 @@ async def get_signals(universe: Literal["major", "scan"] = "major") -> SignalLis
         return SignalListResponse(
             universe=universe, signals=signals, updated_at=state.last_tick_at, tracked_symbols=tracked_symbols
         )
+
+
+@app.get("/api/btc-quant/status")
+async def get_btc_quant_status() -> dict:
+    """BTC 量化 B 方案紙上帳戶狀態（唯讀）。"""
+    store = make_btc_quant_store()
+    saved = await asyncio.to_thread(store.load)
+    events = await asyncio.to_thread(store.recent, 50)
+    if not saved:
+        return {"initialized": False, "enabled": _env_flag("BTC_QUANT_ENABLED", False), "recent_events": events}
+    acc = PaperAccount.from_dict(saved)
+    price = acc.last_price or 0.0
+    equity = acc.equity(price) if price else acc.cash
+    return {
+        "initialized": True,
+        "enabled": _env_flag("BTC_QUANT_ENABLED", False),
+        "start_equity": acc.start_equity,
+        "equity": equity,
+        "return_pct": (equity / acc.start_equity - 1) * 100,
+        "drawdown_pct": acc.drawdown_pct(price) if price else 0.0,
+        "last_price": price,
+        "trend": {"btc_qty": acc.btc_qty, "value": acc.btc_qty * price},
+        "tactical": acc.position,
+        "recent_events": events,
+    }
 
 
 @app.get("/api/history", response_model=HistoryResponse)
