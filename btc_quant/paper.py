@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Optional
 
 from btc_quant.signals import TacticalOrder
@@ -75,10 +75,17 @@ class PaperAccount:
             "delta_qty": delta_qty, "btc_qty": self.btc_qty, "cost": cost, "equity": self.equity(price),
         }
 
-    def open(self, order: TacticalOrder, ts: str) -> dict:
+    def open(self, order: TacticalOrder, ts: str) -> Optional[dict]:
         if self.position:
             raise RuntimeError("already holding a tactical position")
         fee = order.notional * FUTURES_FEE_PCT
+        free_cash = self.cash - fee
+        if free_cash <= 0:
+            return None
+        if order.margin > free_cash:  # 交易所會拒單：依可用現金縮小部位
+            scale = free_cash / order.margin
+            order = replace(order, notional=order.notional * scale, margin=free_cash)
+            fee = order.notional * FUTURES_FEE_PCT
         risk_amount = order.notional * order.stop_pct  # = 進場時權益的 2%
         self.cash -= fee
         self.position = {

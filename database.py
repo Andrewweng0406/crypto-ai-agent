@@ -787,7 +787,8 @@ def list_trade_history(strategy: str, *, symbol: Optional[str] = None, limit: in
         return None
 
 
-def load_btc_quant_state(state_id: str) -> Optional[dict]:
+def load_btc_quant_state(state_id: str, *, strict: bool = False) -> Optional[dict]:
+    """strict=True 時資料庫錯誤直接拋出：呼叫端不能把「讀取失敗」誤當成「沒有狀態」而重置帳戶。"""
     if not DATABASE_URL:
         return None
     try:
@@ -797,11 +798,13 @@ def load_btc_quant_state(state_id: str) -> Optional[dict]:
                 row = cur.fetchone()
                 return row[0] if row else None
     except Exception as exc:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("讀取 btc_quant_state 失敗：%s", exc)
         return None
 
 
-def save_btc_quant_state(state_id: str, state: dict) -> None:
+def save_btc_quant_state(state_id: str, state: dict, *, strict: bool = False) -> None:
     if not DATABASE_URL:
         return
     try:
@@ -816,10 +819,12 @@ def save_btc_quant_state(state_id: str, state: dict) -> None:
                     (state_id, json.dumps(_jsonable(state))),
                 )
     except Exception as exc:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("寫入 btc_quant_state 失敗：%s", exc)
 
 
-def insert_btc_quant_event(kind: str, payload: dict) -> None:
+def insert_btc_quant_event(kind: str, payload: dict, *, strict: bool = False) -> None:
     if not DATABASE_URL:
         return
     try:
@@ -830,6 +835,8 @@ def insert_btc_quant_event(kind: str, payload: dict) -> None:
                     (kind, json.dumps(_jsonable(payload))),
                 )
     except Exception as exc:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("寫入 btc_quant_events 失敗：%s", exc)
 
 

@@ -53,9 +53,14 @@ class BtcQuantRunner:
         saved = store.load()
         self.account = PaperAccount.from_dict(saved) if saved else PaperAccount.new(start_equity)
 
+    async def _save(self) -> None:
+        await asyncio.to_thread(self.store.save, self.account.to_dict())
+
     async def _emit(self, events: list[dict], event: Optional[dict], message: Optional[str]) -> None:
+        """帳戶一有變動就先存檔，再記錄事件、發通知：後面步驟失敗也不會遺失或重複這次變動。"""
         if not event:
             return
+        await self._save()
         events.append(event)
         await asyncio.to_thread(self.store.append, event)
         if message:
@@ -66,6 +71,9 @@ class BtcQuantRunner:
         return closed_candles_df(rows, DAY_MS, now)
 
     async def tick(self) -> list[dict]:
+        saved = await asyncio.to_thread(self.store.load)  # 每次都重新載入：避免沿用其他 instance 已更新過的舊狀態
+        if saved:
+            self.account = PaperAccount.from_dict(saved)
         acc = self.account
         events: list[dict] = []
         now = self.now_ms()
@@ -87,7 +95,9 @@ class BtcQuantRunner:
             for item in history:
                 t = int(item["timestamp"])
                 if acc.last_funding_ts < t <= now:
-                    await self._emit(events, acc.accrue_funding(float(item["fundingRate"]), _iso(t)), None)
+                    ev = acc.accrue_funding(float(item["fundingRate"]), _iso(t))
+                    acc.last_funding_ts = t
+                    await self._emit(events, ev, None)
             acc.last_funding_ts = latest_settle
 
         # 3) 每日現貨調整（UTC 換日後第一次 tick）
@@ -98,8 +108,9 @@ class BtcQuantRunner:
             target = target_as_of(df_1d, today - pd.Timedelta(days=1))
             if not math.isnan(target):
                 ev = acc.rebalance(target, price, ts)
-                await self._emit(events, ev, ev and _rebalance_message(ev))
                 acc.last_daily_date = today.date().isoformat()
+                await self._emit(events, ev, ev and _rebalance_message(ev))
+                await self._save()
                 await self.notify(_daily_summary(acc, price))
 
         # 4) 新收盤的4H K棒 -> 判斷訊號
@@ -120,7 +131,7 @@ class BtcQuantRunner:
                         order = size_position(side, price, last["atr"], acc.equity(price))
                         if order:
                             ev = acc.open(order, ts)
-                            await self._emit(events, ev, _open_message(ev))
+                            await self._emit(events, ev, ev and _open_message(ev))
                 elif not fresh:
                     expected_close = now // FOUR_H_MS * FOUR_H_MS
                     if last_ts + FOUR_H_MS < expected_close:
@@ -136,7 +147,7 @@ class BtcQuantRunner:
         elif dd > DD_ALERT_PCT / 2 and acc.dd_alerted:
             acc.dd_alerted = False
 
-        await asyncio.to_thread(self.store.save, acc.to_dict())
+        await self._save()
         return events
 
 

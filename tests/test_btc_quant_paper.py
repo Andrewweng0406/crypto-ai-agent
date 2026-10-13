@@ -129,3 +129,25 @@ def test_continuous_move_beyond_liquidation_is_still_a_stop():
     ev = acc.on_price(o.liquidation * 0.5, TS)
     assert ev["reason"] == "STOP"
     assert ev["r_multiple"] == pytest.approx(-1.0, abs=0.1)
+
+
+def test_open_caps_margin_to_free_cash():
+    # 現貨買到0.9後，低波動時25倍的保證金可能超過剩餘現金；強平也不能讓現金變負
+    acc = PaperAccount.new(10_000)
+    acc.rebalance(0.9, 100.0, TS)
+    order = size_position("Long", 100.0, 0.4 / 1.5 * 0.8, acc.equity(100.0))
+    assert order.margin > acc.cash
+    ev = acc.open(order, TS)
+    assert ev is not None
+    assert acc.position["margin"] <= acc.cash + 1e-9
+    acc.on_price(acc.position["liquidation"] * 0.5, TS, gap=True)
+    assert acc.cash >= 0
+
+
+def test_open_skips_when_no_free_cash():
+    acc = PaperAccount.new(10_000)
+    acc.cash = 0.0
+    acc.btc_qty = 100.0
+    order = size_position("Long", 100.0, 1.0, acc.equity(100.0))
+    assert acc.open(order, TS) is None
+    assert acc.position is None

@@ -44,14 +44,16 @@ class FileStore:
 
 
 class DbStore:
+    """讀寫失敗一律拋出，讓這次 tick 失敗並重試，避免記憶體狀態和資料庫默默分歧。"""
+
     def load(self) -> Optional[dict]:
-        return database.load_btc_quant_state(STATE_ID)
+        return database.load_btc_quant_state(STATE_ID, strict=True)
 
     def save(self, state: dict) -> None:
-        database.save_btc_quant_state(STATE_ID, state)
+        database.save_btc_quant_state(STATE_ID, state, strict=True)
 
     def append(self, event: dict) -> None:
-        database.insert_btc_quant_event(event.get("kind", "unknown"), event)
+        database.insert_btc_quant_event(event.get("kind", "unknown"), event, strict=True)
 
     def recent(self, limit: int = 50) -> list[dict]:
         return database.list_btc_quant_events(limit) or []

@@ -146,7 +146,7 @@ def test_drawdown_alert_sent_once():
     ex.now = df4.index[i].value // 10**6
     ex.price = float(df4.iloc[i].open)
     asyncio.run(r.tick())
-    r.account.peak_equity = r.account.equity(ex.price) * 2  # 人為製造 -50% 回撤
+    r.store.state["peak_equity"] = r.account.equity(ex.price) * 2  # 人為製造 -50% 回撤（tick 會從 store 重新載入）
     ex.now += 60_000
     asyncio.run(r.tick())
     ex.now += 60_000
@@ -173,6 +173,7 @@ def _with_position(minutes_later):
     asyncio.run(r.tick())
     if r.account.position is None:
         r.account.open(size_position("Long", ex.price, ex.price * 0.01, r.account.equity(ex.price)), "t")
+        r.store.save(r.account.to_dict())
     liq = r.account.position["liquidation"]
     ex.now += minutes_later * 60_000
     ex.price = liq * 0.9
@@ -191,3 +192,55 @@ def test_tick_after_outage_is_treated_as_gap():
     events = asyncio.run(r.tick())
     close = [e for e in events if e["kind"] == "close"][0]
     assert close["reason"] == "LIQUIDATION"
+
+
+class FlakyOhlcvExchange(FakeExchange):
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.ohlcv_fail = False
+
+    async def fetch_ohlcv(self, symbol, timeframe, limit=100):
+        if self.ohlcv_fail:
+            raise RuntimeError("ohlcv down")
+        return await super().fetch_ohlcv(symbol, timeframe, limit)
+
+
+def test_stop_is_kept_when_later_step_fails():
+    df1, df4 = _synthetic()
+    i = 450 * 6
+    ex = FlakyOhlcvExchange(df1, df4)
+    r, sent = _runner(ex)
+    ex.now = df4.index[i].value // 10**6
+    ex.price = float(df4.iloc[i].open)
+    asyncio.run(r.tick())
+    r.account.open(size_position("Long", ex.price, ex.price * 0.01, r.account.equity(ex.price)), "t")
+    r.store.save(r.account.to_dict())
+    stop = r.account.position["stop_loss"]
+    ex.now = df4.index[i + 1].value // 10**6 + 60_000  # 新的4H K棒 -> 會去抓 OHLCV
+    ex.price = stop * 0.999
+    ex.ohlcv_fail = True
+    with pytest.raises(RuntimeError):
+        asyncio.run(r.tick())
+    r, sent = _runner(ex, r.store)  # 背景迴圈出錯後會重建 runner、從 store 載入
+    ex.ohlcv_fail = False
+    ex.price = stop * 1.05  # 價格回升
+    ex.now += 300_000
+    asyncio.run(r.tick())
+    closes = [e for e in r.store.events if e["kind"] == "close"]
+    assert len(closes) == 1
+    assert r.store.state["position"] is None
+
+
+def test_tick_reloads_state_written_by_another_instance():
+    df1, df4 = _synthetic()
+    i = 450 * 6
+    ex = FakeExchange(df1, df4)
+    store = MemStore()
+    a, _ = _runner(ex, store)
+    b, _ = _runner(ex, store)
+    ex.now = df4.index[i].value // 10**6
+    ex.price = float(df4.iloc[i].open)
+    asyncio.run(a.tick())  # A 做了當日調倉
+    ex.now += 300_000
+    asyncio.run(b.tick())  # B 接手：必須看到 A 的狀態，不能再調倉一次
+    assert sum(1 for e in store.events if e["kind"] == "rebalance") == 1
