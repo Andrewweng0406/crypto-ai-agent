@@ -122,7 +122,11 @@ class BtcQuantRunner:
                             ev = acc.open(order, ts)
                             await self._emit(events, ev, _open_message(ev))
                 elif not fresh:
-                    logger.warning("BTC 量化：4H K棒資料過時（最後收盤 %s），本輪不開新倉", _iso(last_ts + FOUR_H_MS))
+                    expected_close = now // FOUR_H_MS * FOUR_H_MS
+                    if last_ts + FOUR_H_MS < expected_close:
+                        logger.warning("BTC 量化：4H K棒資料過時（最後收盤 %s），本輪不開新倉", _iso(last_ts + FOUR_H_MS))
+                    else:
+                        logger.info("BTC 量化：K棒已收盤超過30分鐘（%s，可能剛啟動），不追進場", _iso(last_ts + FOUR_H_MS))
 
         # 5) 回撤警告（每次跌破只發一次，回升後重置）
         dd = acc.drawdown_pct(price)
