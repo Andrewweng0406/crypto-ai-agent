@@ -4,13 +4,18 @@ from main import FIXED_RISK_PCT, MAX_LEVERAGE, MIN_LEVERAGE, calculate_leverage
 
 
 def test_typical_stop_loss_distance():
-    # FIXED_RISK_PCT=15：止損距離1.5% -> floor(15/1.5)=10倍
-    assert calculate_leverage(1.5) == 10
+    # FIXED_RISK_PCT=1：止損距離0.5% -> floor(1/0.5)=2倍
+    assert calculate_leverage(0.5) == 2
 
 
 def test_wider_stop_loss_gives_lower_leverage():
-    # 止損距離4% -> floor(15/4)=3倍
-    assert calculate_leverage(4.0) == 3
+    # 止損距離4% -> floor(1/4)=0 -> 夾到 MIN_LEVERAGE=1
+    assert calculate_leverage(4.0) == MIN_LEVERAGE
+
+
+def test_risk_settings_are_conservative():
+    assert FIXED_RISK_PCT == 1.0
+    assert MAX_LEVERAGE == 5
 
 
 def test_zero_or_negative_stop_loss_pct_falls_back_to_min():

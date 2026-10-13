@@ -195,9 +195,9 @@ MAX_SANE_STOP_LOSS_PCT = 50.0
 # XAUT/USDT:USDT 停損距離僅0.65%，直接拉滿20倍槓桿，單筆虧損13%。
 MIN_SANE_STOP_LOSS_PCT = 1.0
 
-FIXED_RISK_PCT = 15.0        # 固定風險模型：單筆爆倉風險目標百分比
+FIXED_RISK_PCT = 1.0         # 固定風險模型：單筆風險目標百分比（2026-10-13 由15%降為1%，見 docs/quant-review-2026-10-12.md）
 MIN_LEVERAGE = 1
-MAX_LEVERAGE = 20
+MAX_LEVERAGE = 5             # 2026-10-13 由20倍降為5倍，跟風險計算器預設一致
 
 HISTORY_MAX_LEN = 50         # /api/history 保留的歷史訊號筆數（多標的後拉高一點）
 
@@ -624,6 +624,15 @@ async def acquire_background_job_lease(job_name: str, ttl_seconds: int) -> bool:
 
 def background_job_lease_ttl(interval_seconds: int, multiplier: int, *, minimum_seconds: int = 120) -> int:
     return max(int(interval_seconds) * multiplier, minimum_seconds)
+
+
+def legacy_strategy_flags() -> dict[str, bool]:
+    """2026-10-13 檢討後預設關閉的舊策略；設環境變數為 true 可重新啟用。"""
+    return {
+        "us_stock_orb": _env_flag("US_STOCK_ORB_ENABLED", False),
+        "rsi2_meanrev": _env_flag("RSI2_MEANREV_ENABLED", False),
+        "meme_trade": _env_flag("MEME_TRADE_ENABLED", False),
+    }
 
 
 async def load_trade_history_records(strategy: str, memory_records: list[dict], *, symbol: Optional[str] = None) -> list[dict]:
@@ -5814,14 +5823,18 @@ def start_background_tasks(exchange_pool: dict) -> List[asyncio.Task]:
         TICK_INTERVAL_SECONDS,
     )
 
-    us_stock_task = asyncio.create_task(us_stock_orb_loop())
-    tasks.append(us_stock_task)
-    logger.info(
-        "美股 ORB 當沖背景迴圈已啟動（標的：%s，只在美東 %s-%s 交易時段內運作）",
-        ", ".join(state.us_stock_watchlist.keys()),
-        US_MARKET_OPEN.strftime("%H:%M"),
-        US_MARKET_CLOSE.strftime("%H:%M"),
-    )
+    flags = legacy_strategy_flags()
+    if flags["us_stock_orb"]:
+        us_stock_task = asyncio.create_task(us_stock_orb_loop())
+        tasks.append(us_stock_task)
+        logger.info(
+            "美股 ORB 當沖背景迴圈已啟動（標的：%s，只在美東 %s-%s 交易時段內運作）",
+            ", ".join(state.us_stock_watchlist.keys()),
+            US_MARKET_OPEN.strftime("%H:%M"),
+            US_MARKET_CLOSE.strftime("%H:%M"),
+        )
+    else:
+        logger.info("美股 ORB 已停用（US_STOCK_ORB_ENABLED=false）")
 
     news_agent_task = asyncio.create_task(news_agent_loop())
     tasks.append(news_agent_task)
@@ -5844,19 +5857,25 @@ def start_background_tasks(exchange_pool: dict) -> List[asyncio.Task]:
             OPTIONS_SCAN_INTERVAL_SECONDS,
         )
 
-    rsi2_meanrev_task = asyncio.create_task(rsi2_meanrev_loop())
-    tasks.append(rsi2_meanrev_task)
-    logger.info(
-        "🎯 RSI(2)均值回歸實盤監控已啟動（標的：%s，只在美股交易時段內運作）",
-        ", ".join(STOCK_MEANREV_SYMBOLS),
-    )
+    if flags["rsi2_meanrev"]:
+        rsi2_meanrev_task = asyncio.create_task(rsi2_meanrev_loop())
+        tasks.append(rsi2_meanrev_task)
+        logger.info(
+            "🎯 RSI(2)均值回歸實盤監控已啟動（標的：%s，只在美股交易時段內運作）",
+            ", ".join(STOCK_MEANREV_SYMBOLS),
+        )
+    else:
+        logger.info("RSI(2)均值回歸已停用（RSI2_MEANREV_ENABLED=false）")
 
-    meme_trade_task = asyncio.create_task(meme_trade_loop(exchange_pool))
-    tasks.append(meme_trade_task)
-    logger.info(
-        "🔥 迷因當沖背景迴圈已啟動（標的：%s，180天回測樣本數達統計門檻的兩檔）",
-        ", ".join(s.split("/")[0] for s in MEME_TRADE_SYMBOLS),
-    )
+    if flags["meme_trade"]:
+        meme_trade_task = asyncio.create_task(meme_trade_loop(exchange_pool))
+        tasks.append(meme_trade_task)
+        logger.info(
+            "🔥 迷因當沖背景迴圈已啟動（標的：%s，180天回測樣本數達統計門檻的兩檔）",
+            ", ".join(s.split("/")[0] for s in MEME_TRADE_SYMBOLS),
+        )
+    else:
+        logger.info("迷因當沖已停用（MEME_TRADE_ENABLED=false）")
 
     data_source_health_flush_task = asyncio.create_task(data_source_health_db_flush_loop())
     tasks.append(data_source_health_flush_task)
