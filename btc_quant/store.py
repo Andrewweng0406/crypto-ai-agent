@@ -9,6 +9,7 @@ from typing import Optional
 import database
 
 STATE_ID = "default"
+ALL_EVENTS_LIMIT = 100_000
 _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 
 
@@ -35,6 +36,12 @@ class FileStore:
         with open(self.events_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
 
+    def all_events(self) -> list[dict]:
+        if not os.path.exists(self.events_path):
+            return []
+        with open(self.events_path, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
     def recent(self, limit: int = 50) -> list[dict]:
         if not os.path.exists(self.events_path):
             return []
@@ -57,6 +64,9 @@ class DbStore:
 
     def recent(self, limit: int = 50) -> list[dict]:
         return database.list_btc_quant_events(limit) or []
+
+    def all_events(self) -> list[dict]:
+        return list(reversed(database.list_btc_quant_events(ALL_EVENTS_LIMIT) or []))
 
 
 def make_store():

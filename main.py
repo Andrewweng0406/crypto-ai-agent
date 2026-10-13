@@ -90,6 +90,7 @@ from pydantic import BaseModel
 
 from btc_quant.paper import PaperAccount
 from btc_quant.runner import run_btc_quant_loop
+from btc_quant.stats import summarize_events as summarize_btc_quant_events
 from btc_quant.store import make_store as make_btc_quant_store
 from database import (
     create_journal_entry,
@@ -6041,6 +6042,7 @@ async def get_btc_quant_status() -> dict:
     store = make_btc_quant_store()
     saved = await asyncio.to_thread(store.load)
     events = await asyncio.to_thread(store.recent, 50)
+    history = await asyncio.to_thread(store.all_events)
     if not saved:
         return {"initialized": False, "enabled": _env_flag("BTC_QUANT_ENABLED", False), "recent_events": events}
     acc = PaperAccount.from_dict(saved)
@@ -6056,6 +6058,7 @@ async def get_btc_quant_status() -> dict:
         "last_price": price,
         "trend": {"btc_qty": acc.btc_qty, "value": acc.btc_qty * price},
         "tactical": acc.position,
+        "stats": summarize_btc_quant_events(history, acc.start_equity),
         "recent_events": events,
     }
 

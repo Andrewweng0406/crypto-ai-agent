@@ -31,3 +31,10 @@ def test_db_store_raises_instead_of_pretending_state_is_missing(monkeypatch):
         DbStore().save({"cash": 1})
     with pytest.raises(OSError):
         DbStore().append({"kind": "open"})
+
+
+def test_file_store_all_events_in_order(tmp_path):
+    st = FileStore(str(tmp_path / "state.json"), str(tmp_path / "events.jsonl"))
+    for i in range(3):
+        st.append({"kind": "close", "ts": f"t{i}"})
+    assert [e["ts"] for e in st.all_events()] == ["t0", "t1", "t2"]

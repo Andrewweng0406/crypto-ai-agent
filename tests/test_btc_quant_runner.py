@@ -26,6 +26,9 @@ class MemStore:
     def recent(self, limit=50):
         return list(reversed(self.events))[:limit]
 
+    def all_events(self):
+        return list(self.events)
+
 
 class FakeExchange:
     """依 self.now 逐步揭露歷史：只回傳 open_ts <= now 的K棒（含正在形成的那根）。"""
@@ -257,3 +260,16 @@ def test_daily_summary_shows_cycle_phase():
     summary = [m for m in sent if "每日摘要" in m][0]
     assert "減半後第" in summary
     assert any(p in summary for p in ("牛市段", "熊市窗口", "復甦段"))
+
+
+def test_daily_equity_snapshot_recorded_once_per_day():
+    df1, df4 = _synthetic()
+    i = 450 * 6
+    ex = FakeExchange(df1, df4)
+    r, sent = _runner(ex)
+    asyncio.run(_drive(r, ex, df4, i, i + 12))  # 兩天
+    snaps = [e for e in r.store.events if e["kind"] == "daily_equity"]
+    assert len(snaps) == 2
+    assert {"equity", "return_pct", "drawdown_pct", "btc_qty", "price", "cycle_month", "cycle_phase"} <= set(snaps[0])
+    summary = [m for m in sent if "每日摘要" in m][-1]
+    assert "勝率" in summary

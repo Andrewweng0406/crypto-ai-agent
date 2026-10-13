@@ -13,6 +13,7 @@ from typing import Awaitable, Callable, Optional
 import pandas as pd
 
 from btc_quant.paper import PaperAccount
+from btc_quant.stats import summarize_events
 from btc_quant.signals import (
     DAILY_LOOKBACK,
     DAY_MS,
@@ -113,7 +114,10 @@ class BtcQuantRunner:
                 acc.last_daily_date = today.date().isoformat()
                 await self._emit(events, ev, ev and _rebalance_message(ev))
                 await self._save()
-                await self.notify(_daily_summary(acc, price, today))
+                await self._emit(events, _daily_snapshot(acc, price, today, ts), None)
+                history = await asyncio.to_thread(self.store.all_events)
+                stats = summarize_events(history, acc.start_equity)
+                await self.notify(_daily_summary(acc, price, today, stats))
 
         # 4) 新收盤的4H K棒 -> 判斷訊號
         rows_4h = await self.exchange.fetch_ohlcv(SYMBOL, "4h", limit=FOUR_H_LOOKBACK)
@@ -180,7 +184,18 @@ def _rebalance_message(ev: dict) -> str:
     )
 
 
-def _daily_summary(acc: PaperAccount, price: float, today: pd.Timestamp) -> str:
+def _daily_snapshot(acc: PaperAccount, price: float, today: pd.Timestamp, ts: str) -> dict:
+    months = months_since_halving(today)
+    eq = acc.equity(price)
+    return {
+        "kind": "daily_equity", "ts": ts, "date": today.date().isoformat(), "equity": eq,
+        "return_pct": (eq / acc.start_equity - 1) * 100, "drawdown_pct": acc.drawdown_pct(price),
+        "btc_qty": acc.btc_qty, "price": price, "has_position": acc.position is not None,
+        "cycle_month": months, "cycle_phase": cycle_phase(months),
+    }
+
+
+def _daily_summary(acc: PaperAccount, price: float, today: pd.Timestamp, stats: dict) -> str:
     eq = acc.equity(price)
     months = months_since_halving(today)
     pos = acc.position
@@ -188,7 +203,9 @@ def _daily_summary(acc: PaperAccount, price: float, today: pd.Timestamp) -> str:
     return (
         f"📅 <b>BTC 量化（紙上）每日摘要</b>\n淨值 {eq:,.2f} USDT（自起始 {(eq / acc.start_equity - 1) * 100:+.2f}%）\n"
         f"回撤 {acc.drawdown_pct(price):.1f}%\n現貨 {acc.btc_qty:.5f} BTC\n合約持倉 {pos_text}\n"
-        f"週期：減半後第 {months:.0f} 個月・{cycle_phase(months)}"
+        f"週期：減半後第 {months:.0f} 個月・{cycle_phase(months)}\n"
+        f"累計合約交易 {stats['trades']} 筆・勝率 {stats['win_rate_pct']:.0f}%・平均 {stats['avg_r']:+.2f}R・"
+        f"最大回撤 {stats['max_drawdown_pct']:.1f}%（已記錄 {stats['days_recorded']} 天）"
     )
 
 
