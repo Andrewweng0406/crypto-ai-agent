@@ -124,3 +124,13 @@ def test_trend_target_capped_in_bear_window():
     assert bear.index[-1] == pd.Timestamp("2018-02-10", tz="UTC")
     assert s.trend_target_series(bear).iloc[-1] == pytest.approx(s.CYCLE_BEAR_MAX_EXPOSURE)
     assert s.trend_target_series(bull).iloc[-1] == pytest.approx(s.TREND_MAX_EXPOSURE)
+
+
+def test_long_risk_halved_in_bear_window():
+    normal = s.size_position("Long", 100.0, 1.0, 10_000, months=10.0)
+    bear_long = s.size_position("Long", 100.0, 1.0, 10_000, months=20.0)
+    bear_short = s.size_position("Short", 100.0, 1.0, 10_000, months=20.0)
+    assert bear_long.notional == pytest.approx(normal.notional * s.CYCLE_BEAR_LONG_RISK_MULT)
+    assert bear_long.margin == pytest.approx(normal.margin * s.CYCLE_BEAR_LONG_RISK_MULT)
+    assert bear_short.notional == pytest.approx(normal.notional)
+    assert s.size_position("Long", 100.0, 1.0, 10_000).notional == pytest.approx(normal.notional)  # 未給月份=不調整

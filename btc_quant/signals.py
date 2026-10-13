@@ -38,6 +38,7 @@ HALVINGS = [
 DAYS_PER_MONTH = 30.4
 CYCLE_BEAR_WINDOW_MONTHS = (18.0, 30.0)
 CYCLE_BEAR_MAX_EXPOSURE = 0.30
+CYCLE_BEAR_LONG_RISK_MULT = 0.5  # 熊市窗口內4H做多風險減半（4輪皆改善，含樣本外2012輪）
 
 ATR_PERIOD = 14
 BREAKOUT_LOOKBACK = 20
@@ -169,8 +170,11 @@ class TacticalOrder:
     stop_pct: float
 
 
-def size_position(side: str, entry: float, atr: float, equity: float) -> Optional[TacticalOrder]:
-    """依每筆風險決定部位；交易所槓桿取讓強平距離 >= 2倍停損距離的最大值（上限25）。"""
+def size_position(
+    side: str, entry: float, atr: float, equity: float, months: float = float("nan")
+) -> Optional[TacticalOrder]:
+    """依每筆風險決定部位；交易所槓桿取讓強平距離 >= 2倍停損距離的最大值（上限25）。
+    months = 減半後第幾個月；落在熊市窗口時做多風險減半。"""
     if side not in ("Long", "Short") or entry <= 0 or equity <= 0 or not atr or atr <= 0 or pd.isna(atr):
         return None
     stop_pct = TACTICAL_STOP_ATR * atr / entry
@@ -178,7 +182,10 @@ def size_position(side: str, entry: float, atr: float, equity: float) -> Optiona
     if leverage < 1:
         return None
     sign = 1 if side == "Long" else -1
-    notional = equity * TACTICAL_RISK_PCT / stop_pct
+    risk_pct = TACTICAL_RISK_PCT
+    if side == "Long" and cycle_phase(months) == "熊市窗口":
+        risk_pct *= CYCLE_BEAR_LONG_RISK_MULT
+    notional = equity * risk_pct / stop_pct
     liq_distance = 1 / leverage - MAINT_MARGIN
     return TacticalOrder(
         side=side,

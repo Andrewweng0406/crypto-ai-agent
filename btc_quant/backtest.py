@@ -19,6 +19,7 @@ import pandas as pd
 from btc_quant.paper import PaperAccount
 from btc_quant.signals import (
     ensemble_as_of,
+    months_since_halving,
     prepare_4h,
     signal_day_for_bar,
     size_position,
@@ -92,7 +93,7 @@ def run_backtest(
         if acc.position is None:
             side = tactical_signal(prev.close, prev.up, prev.dn, cache.ens(signal_day_for_bar(prev.Index)))
             if side:
-                order = size_position(side, bar.open, prev.atr, acc.equity(bar.open))
+                order = size_position(side, bar.open, prev.atr, acc.equity(bar.open), months_since_halving(t))
                 if order:
                     emit(acc.open(order, ts))
 

@@ -134,7 +134,9 @@ class BtcQuantRunner:
                     ens = ensemble_as_of(df_1d, signal_day_for_bar(bars.index[-1]))
                     side = tactical_signal(last["close"], last["up"], last["dn"], ens)
                     if side:
-                        order = size_position(side, price, last["atr"], acc.equity(price))
+                        order = size_position(
+                            side, price, last["atr"], acc.equity(price), months_since_halving(pd.Timestamp(now, unit="ms", tz="UTC"))
+                        )
                         if order:
                             ev = acc.open(order, ts)
                             await self._emit(events, ev, ev and _open_message(ev))
