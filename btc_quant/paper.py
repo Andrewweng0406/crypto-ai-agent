@@ -90,13 +90,17 @@ class PaperAccount:
         self.mark(order.entry)
         return {"kind": "open", "ts": ts, **self.position, "equity": self.equity(order.entry)}
 
-    def on_price(self, price: float, ts: str) -> Optional[dict]:
+    def on_price(self, price: float, ts: str, gap: bool = False) -> Optional[dict]:
+        """gap=False：價格連續移動，交易所停損單會在停損價成交。
+        gap=True：價格跳空（新K棒開盤、報價中斷），以較差價成交；跳過強平價則只損失逐倉保證金。"""
         p = self.position
         if p:
             long = p["side"] == "Long"
             hit_stop = price <= p["stop_loss"] if long else price >= p["stop_loss"]
             hit_tp = price >= p["take_profit"] if long else price <= p["take_profit"]
             if hit_stop:
+                if not gap:
+                    return self._close(p["stop_loss"], "STOP", price, ts)
                 beyond_liq = price <= p["liquidation"] if long else price >= p["liquidation"]
                 if beyond_liq:
                     return self._close(None, "LIQUIDATION", price, ts)

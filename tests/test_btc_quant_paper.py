@@ -49,7 +49,7 @@ def test_gap_through_stop_fills_at_worse_price():
     acc = PaperAccount.new(10_000)
     o = _long(acc)
     gap = (o.stop_loss + o.liquidation) / 2
-    ev = acc.on_price(gap, TS)
+    ev = acc.on_price(gap, TS, gap=True)
     assert ev["reason"] == "STOP"
     assert ev["exit"] == pytest.approx(gap)
 
@@ -58,7 +58,7 @@ def test_gap_through_liquidation_loses_only_margin():
     acc = PaperAccount.new(10_000)
     o = _long(acc)
     cash_before = acc.cash
-    ev = acc.on_price(o.liquidation * 0.5, TS)
+    ev = acc.on_price(o.liquidation * 0.5, TS, gap=True)
     assert ev["reason"] == "LIQUIDATION"
     assert acc.cash == pytest.approx(cash_before - o.margin)
     assert acc.cash > 0
@@ -112,3 +112,20 @@ def test_drawdown_tracks_peak():
     acc.mark(110.0)
     assert acc.drawdown_pct(110.0) == pytest.approx(0.0)
     assert acc.drawdown_pct(90.0) < 0
+
+
+def test_continuous_cross_fills_at_resting_stop():
+    # 價格連續移動時，交易所上的停損單會先在停損價成交，不會用之後看到的更差價格
+    acc = PaperAccount.new(10_000)
+    o = _long(acc)
+    ev = acc.on_price((o.stop_loss + o.liquidation) / 2, TS)
+    assert ev["reason"] == "STOP"
+    assert ev["exit"] == pytest.approx(o.stop_loss)
+
+
+def test_continuous_move_beyond_liquidation_is_still_a_stop():
+    acc = PaperAccount.new(10_000)
+    o = _long(acc)
+    ev = acc.on_price(o.liquidation * 0.5, TS)
+    assert ev["reason"] == "STOP"
+    assert ev["r_multiple"] == pytest.approx(-1.0, abs=0.1)
