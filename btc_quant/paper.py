@@ -27,6 +27,7 @@ class PaperAccount:
     last_daily_date: Optional[str] = None
     last_4h_bar_ts: Optional[int] = None
     last_funding_ts: Optional[int] = None
+    last_tick_ms: Optional[int] = None
     dd_alerted: bool = False
 
     @classmethod
