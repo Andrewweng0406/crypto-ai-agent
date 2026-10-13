@@ -46,3 +46,18 @@ def test_second_migration_declares_job_leases_table():
     assert "job_name TEXT PRIMARY KEY" in migration_sql
     assert "heartbeat_at TIMESTAMPTZ NOT NULL" in migration_sql
     assert "expires_at TIMESTAMPTZ NOT NULL" in migration_sql
+
+
+def test_third_migration_declares_btc_quant_tables():
+    version, sql = database.MIGRATIONS[2]
+    assert version == 3
+    assert "CREATE TABLE IF NOT EXISTS btc_quant_state" in sql
+    assert "CREATE TABLE IF NOT EXISTS btc_quant_events" in sql
+
+
+def test_btc_quant_db_functions_noop_without_url(monkeypatch):
+    monkeypatch.setattr(database, "DATABASE_URL", None)
+    assert database.load_btc_quant_state("default") is None
+    database.save_btc_quant_state("default", {"cash": 1})
+    database.insert_btc_quant_event("open", {"x": 1})
+    assert database.list_btc_quant_events() is None

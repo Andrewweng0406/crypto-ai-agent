@@ -140,6 +140,26 @@ MIGRATIONS: list[tuple[int, str]] = [
             ON job_leases (expires_at);
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS btc_quant_state (
+            id TEXT PRIMARY KEY,
+            state JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS btc_quant_events (
+            id BIGSERIAL PRIMARY KEY,
+            ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+            kind TEXT NOT NULL,
+            payload JSONB NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_btc_quant_events_ts
+            ON btc_quant_events (ts DESC);
+        """,
+    ),
 ]
 
 
@@ -764,4 +784,63 @@ def list_trade_history(strategy: str, *, symbol: Optional[str] = None, limit: in
                 return records
     except Exception as exc:  # noqa: BLE001
         logger.warning("讀取 trade_history 失敗（%s）：%s", strategy, exc)
+        return None
+
+
+def load_btc_quant_state(state_id: str) -> Optional[dict]:
+    if not DATABASE_URL:
+        return None
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT state FROM btc_quant_state WHERE id = %s", (state_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 btc_quant_state 失敗：%s", exc)
+        return None
+
+
+def save_btc_quant_state(state_id: str, state: dict) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO btc_quant_state (id, state, updated_at)
+                    VALUES (%s, %s::jsonb, now())
+                    ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()
+                    """,
+                    (state_id, json.dumps(_jsonable(state))),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 btc_quant_state 失敗：%s", exc)
+
+
+def insert_btc_quant_event(kind: str, payload: dict) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO btc_quant_events (kind, payload) VALUES (%s, %s::jsonb)",
+                    (kind, json.dumps(_jsonable(payload))),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("寫入 btc_quant_events 失敗：%s", exc)
+
+
+def list_btc_quant_events(limit: int = 50) -> Optional[list[dict]]:
+    if not DATABASE_URL:
+        return None
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM btc_quant_events ORDER BY id DESC LIMIT %s", (limit,))
+                return [row[0] for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("讀取 btc_quant_events 失敗：%s", exc)
         return None
