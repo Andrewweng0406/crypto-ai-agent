@@ -244,3 +244,16 @@ def test_tick_reloads_state_written_by_another_instance():
     ex.now += 300_000
     asyncio.run(b.tick())  # B 接手：必須看到 A 的狀態，不能再調倉一次
     assert sum(1 for e in store.events if e["kind"] == "rebalance") == 1
+
+
+def test_daily_summary_shows_cycle_phase():
+    df1, df4 = _synthetic()
+    i = 450 * 6
+    ex = FakeExchange(df1, df4)
+    r, sent = _runner(ex)
+    ex.now = df4.index[i].value // 10**6
+    ex.price = float(df4.iloc[i].open)
+    asyncio.run(r.tick())
+    summary = [m for m in sent if "每日摘要" in m][0]
+    assert "減半後第" in summary
+    assert any(p in summary for p in ("牛市段", "熊市窗口", "復甦段"))

@@ -25,6 +25,20 @@ TREND_VOL_TARGET = 0.40
 TREND_VOL_WINDOW = 30
 TREND_MAX_EXPOSURE = 0.90  # 保留至少10% USDT給合約保證金
 
+# 四年減半週期（見 docs/btc-cycle-research-2026-10-14.md）：減半後第18-30個月是歷史熊市窗口，
+# 4輪（含樣本外的2012輪）都顯示在這段把趨勢部位上限壓到30%能減少虧損。
+# 2028年減半日期是預估值（區塊高度 1,050,000），實際發生後要更新。
+HALVINGS = [
+    pd.Timestamp("2012-11-28", tz="UTC"),
+    pd.Timestamp("2016-07-09", tz="UTC"),
+    pd.Timestamp("2020-05-11", tz="UTC"),
+    pd.Timestamp("2024-04-19", tz="UTC"),
+    pd.Timestamp("2028-04-15", tz="UTC"),
+]
+DAYS_PER_MONTH = 30.4
+CYCLE_BEAR_WINDOW_MONTHS = (18.0, 30.0)
+CYCLE_BEAR_MAX_EXPOSURE = 0.30
+
 ATR_PERIOD = 14
 BREAKOUT_LOOKBACK = 20
 TACTICAL_STOP_ATR = 1.5
@@ -70,10 +84,32 @@ def daily_ensemble(df_1d: pd.DataFrame) -> pd.Series:
     return sum(parts) / len(parts)
 
 
+def months_since_halving(ts: pd.Timestamp) -> float:
+    past = [h for h in HALVINGS if h <= ts]
+    if not past:
+        return float("nan")
+    return (ts - past[-1]).total_seconds() / 86400 / DAYS_PER_MONTH
+
+
+def cycle_phase(months: float) -> str:
+    if pd.isna(months):
+        return "未知"
+    lo, hi = CYCLE_BEAR_WINDOW_MONTHS
+    if months < lo:
+        return "牛市段"
+    if months < hi:
+        return "熊市窗口"
+    return "復甦段"
+
+
 def trend_target_series(df_1d: pd.DataFrame) -> pd.Series:
     vol = df_1d["close"].pct_change().rolling(TREND_VOL_WINDOW).std() * math.sqrt(365)
     target = daily_ensemble(df_1d) * TREND_VOL_TARGET / vol
-    return target.clip(lower=0.0, upper=TREND_MAX_EXPOSURE).fillna(0.0)
+    target = target.clip(lower=0.0, upper=TREND_MAX_EXPOSURE).fillna(0.0)
+    lo, hi = CYCLE_BEAR_WINDOW_MONTHS
+    months = pd.Series([months_since_halving(t) for t in df_1d.index], index=df_1d.index)
+    in_bear = (months >= lo) & (months < hi)
+    return target.where(~in_bear, target.clip(upper=CYCLE_BEAR_MAX_EXPOSURE))
 
 
 def _window(df_1d: pd.DataFrame, day: pd.Timestamp) -> Optional[pd.DataFrame]:

@@ -19,7 +19,9 @@ from btc_quant.signals import (
     FOUR_H_LOOKBACK,
     FOUR_H_MS,
     closed_candles_df,
+    cycle_phase,
     ensemble_as_of,
+    months_since_halving,
     prepare_4h,
     signal_day_for_bar,
     size_position,
@@ -111,7 +113,7 @@ class BtcQuantRunner:
                 acc.last_daily_date = today.date().isoformat()
                 await self._emit(events, ev, ev and _rebalance_message(ev))
                 await self._save()
-                await self.notify(_daily_summary(acc, price))
+                await self.notify(_daily_summary(acc, price, today))
 
         # 4) 新收盤的4H K棒 -> 判斷訊號
         rows_4h = await self.exchange.fetch_ohlcv(SYMBOL, "4h", limit=FOUR_H_LOOKBACK)
@@ -178,13 +180,15 @@ def _rebalance_message(ev: dict) -> str:
     )
 
 
-def _daily_summary(acc: PaperAccount, price: float) -> str:
+def _daily_summary(acc: PaperAccount, price: float, today: pd.Timestamp) -> str:
     eq = acc.equity(price)
+    months = months_since_halving(today)
     pos = acc.position
     pos_text = f"{'多' if pos['side'] == 'Long' else '空'}單 {pos['notional']:,.0f} USDT" if pos else "無"
     return (
         f"📅 <b>BTC 量化（紙上）每日摘要</b>\n淨值 {eq:,.2f} USDT（自起始 {(eq / acc.start_equity - 1) * 100:+.2f}%）\n"
-        f"回撤 {acc.drawdown_pct(price):.1f}%\n現貨 {acc.btc_qty:.5f} BTC\n合約持倉 {pos_text}"
+        f"回撤 {acc.drawdown_pct(price):.1f}%\n現貨 {acc.btc_qty:.5f} BTC\n合約持倉 {pos_text}\n"
+        f"週期：減半後第 {months:.0f} 個月・{cycle_phase(months)}"
     )
 
 

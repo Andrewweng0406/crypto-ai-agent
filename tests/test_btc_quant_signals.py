@@ -100,3 +100,27 @@ def test_prepare_4h_columns():
     p = s.prepare_4h(df)
     assert p["atr"].iloc[-1] == pytest.approx(2.0)
     assert p["up"].iloc[-1] == pytest.approx(c.iloc[-21:-1].max() + 1)
+
+
+def test_months_since_halving():
+    assert s.months_since_halving(pd.Timestamp("2024-04-19", tz="UTC")) == pytest.approx(0.0)
+    assert s.months_since_halving(pd.Timestamp("2026-10-13", tz="UTC")) == pytest.approx(29.8, abs=0.2)
+    assert s.months_since_halving(pd.Timestamp("2018-01-07", tz="UTC")) == pytest.approx(18.0, abs=0.1)
+    assert math.isnan(s.months_since_halving(pd.Timestamp("2011-01-01", tz="UTC")))
+
+
+def test_cycle_phase_labels():
+    assert s.cycle_phase(5.0) == "牛市段"
+    assert s.cycle_phase(18.0) == "熊市窗口"
+    assert s.cycle_phase(29.9) == "熊市窗口"
+    assert s.cycle_phase(30.0) == "復甦段"
+    assert s.cycle_phase(float("nan")) == "未知"
+
+
+def test_trend_target_capped_in_bear_window():
+    # 2018-01-07 起是 2016 輪減半後第18個月 -> 熊市窗口，持倉上限 0.30
+    bear = _daily(np.linspace(100, 101, 400), start="2017-01-07")
+    bull = _daily(np.linspace(100, 101, 400), start="2016-12-01")  # 結束於 2018-01-05，第17.9個月
+    assert bear.index[-1] == pd.Timestamp("2018-02-10", tz="UTC")
+    assert s.trend_target_series(bear).iloc[-1] == pytest.approx(s.CYCLE_BEAR_MAX_EXPOSURE)
+    assert s.trend_target_series(bull).iloc[-1] == pytest.approx(s.TREND_MAX_EXPOSURE)
