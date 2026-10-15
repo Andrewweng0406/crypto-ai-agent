@@ -637,6 +637,7 @@ def legacy_strategy_flags() -> dict[str, bool]:
         "us_stock_orb": _env_flag("US_STOCK_ORB_ENABLED", False),
         "rsi2_meanrev": _env_flag("RSI2_MEANREV_ENABLED", False),
         "meme_trade": _env_flag("MEME_TRADE_ENABLED", False),
+        "scan_universe": _env_flag("SCAN_UNIVERSE_ENABLED", False),  # 山寨幣成交量前N名掃描
     }
 
 
@@ -4123,6 +4124,14 @@ async def rsi2_meanrev_loop() -> None:
 
 async def refresh_scan_universe(exchange_pool: dict) -> None:
     """每 SCAN_UNIVERSE_REFRESH_SECONDS 秒重新依 24h 成交量排名一次市場掃描名單。"""
+    if not legacy_strategy_flags()["scan_universe"]:
+        # 2026-10-14 停用山寨幣掃描（見 docs/quant-review-2026-10-12.md）：只留主流幣；
+        # 已持有的山寨幣訊號仍由 build_tracked_symbols() 繼續監控到結算
+        if state.scan_universe:
+            async with state.lock:
+                state.scan_universe = []
+            logger.info("山寨幣掃描已停用（SCAN_UNIVERSE_ENABLED=false），清空掃描名單")
+        return
     now = time.monotonic()
     if state.scan_universe and now - state.last_scan_universe_refresh < SCAN_UNIVERSE_REFRESH_SECONDS:
         return
